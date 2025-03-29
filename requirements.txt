@@ -1,0 +1,24 @@
+# Core dependencies
+streamlit
+python-dotenv
+openai
+asyncio
+langchain
+langchain-openai
+tiktoken 
+
+# Utilities
+tqdm
+pytest
+pytest-asyncio
+pydantic
+
+# Data handling and visualization
+matplotlib
+pandas
+plotly
+numpy
+
+# Optional enhancements for future features
+scikit-learn
+datasets
