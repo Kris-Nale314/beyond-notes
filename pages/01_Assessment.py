@@ -302,8 +302,15 @@ def generate_report_file(result, assessment_type, file_format="html"):
     """Generate a downloadable report file."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
+    # Create a clean copy of the result without any API keys
+    clean_result = result.copy()
+    if "metadata" in clean_result and "options" in clean_result["metadata"]:
+        if "api_key" in clean_result["metadata"]["options"]:
+            clean_result["metadata"]["options"].pop("api_key")
+    
     if file_format == "html":
-        html_content = generate_html_report(result, assessment_type)
+        # No changes needed for HTML as it uses the template
+        html_content = generate_html_report(clean_result, assessment_type)
         return html_content, f"{assessment_type}_report_{timestamp}.html", "text/html"
     
     elif file_format == "markdown":
@@ -311,7 +318,7 @@ def generate_report_file(result, assessment_type, file_format="html"):
         md_content = f"# {assessment_type.title()} Assessment\n\n"
         
         # Add executive summary
-        formatted_result = result.get("result", {})
+        formatted_result = clean_result.get("result", {})
         md_content += f"## Executive Summary\n\n{formatted_result.get('executive_summary', '')}\n\n"
         
         # Add sections
@@ -336,7 +343,7 @@ def generate_report_file(result, assessment_type, file_format="html"):
         return md_content, f"{assessment_type}_report_{timestamp}.md", "text/markdown"
     
     elif file_format == "json":
-        return json.dumps(result, indent=2), f"{assessment_type}_report_{timestamp}.json", "application/json"
+        return json.dumps(clean_result, indent=2), f"{assessment_type}_report_{timestamp}.json", "application/json"
     
     return None, None, None
 
@@ -565,17 +572,28 @@ def main():
                     result = asyncio.run(process_document(document, assessment_type, model, options))
                     
                     if result:
+                        # Remove API key from result before storing
+                        if "metadata" in result and "options" in result["metadata"]:
+                            if "api_key" in result["metadata"]["options"]:
+                                result["metadata"]["options"].pop("api_key")
+                        
                         # Store result in session state
                         st.session_state.document = document
                         st.session_state.assessment_result = result
                         st.session_state.assessment_type = assessment_type
                         
-                        # Save result to file
+                        # Save result to file with API key removed
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         output_path = f"output/{assessment_type}_result_{timestamp}.json"
                         
+                        # Create a clean copy of the result without any API keys
+                        clean_result = result.copy()
+                        if "metadata" in clean_result and "options" in clean_result["metadata"]:
+                            if "api_key" in clean_result["metadata"]["options"]:
+                                clean_result["metadata"]["options"].pop("api_key")
+                        
                         with open(output_path, 'w') as f:
-                            json.dump(result, f, indent=2)
+                            json.dump(clean_result, f, indent=2)
                         
                         st.success(f"Processing complete! Results saved to {output_path}")
                         
