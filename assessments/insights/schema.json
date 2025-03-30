@@ -1,0 +1,166 @@
+{
+    "type": "object",
+    "properties": {
+      "executive_summary": {
+        "type": "string",
+        "description": "A concise summary of the key insights from the SWOT analysis"
+      },
+      "client_context": {
+        "type": "object",
+        "properties": {
+          "client_name": {"type": "string"},
+          "industry": {"type": "string"},
+          "size": {"type": "string"},
+          "key_challenges": {"type": "string"},
+          "objectives": {"type": "string"},
+          "current_systems": {"type": "string"},
+          "additional_context": {"type": "string"}
+        }
+      },
+      "swot_analysis": {
+        "type": "object",
+        "properties": {
+          "strengths": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "description": {"type": "string"},
+                "impact": {"type": "string", "enum": ["high", "medium", "low"]},
+                "strategic_implication": {"type": "string"},
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "text": {"type": "string"},
+                      "chunk_index": {"type": "integer"}
+                    },
+                    "required": ["text"]
+                  }
+                }
+              },
+              "required": ["description", "impact"]
+            }
+          },
+          "weaknesses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "description": {"type": "string"},
+                "impact": {"type": "string", "enum": ["high", "medium", "low"]},
+                "strategic_implication": {"type": "string"},
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "text": {"type": "string"},
+                      "chunk_index": {"type": "integer"}
+                    },
+                    "required": ["text"]
+                  }
+                }
+              },
+              "required": ["description", "impact"]
+            }
+          },
+          "opportunities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "description": {"type": "string"},
+                "impact": {"type": "string", "enum": ["high", "medium", "low"]},
+                "strategic_implication": {"type": "string"},
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "text": {"type": "string"},
+                      "chunk_index": {"type": "integer"}
+                    },
+                    "required": ["text"]
+                  }
+                }
+              },
+              "required": ["description", "impact"]
+            }
+          },
+          "threats": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "description": {"type": "string"},
+                "impact": {"type": "string", "enum": ["high", "medium", "low"]},
+                "strategic_implication": {"type": "string"},
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "text": {"type": "string"},
+                      "chunk_index": {"type": "integer"}
+                    },
+                    "required": ["text"]
+                  }
+                }
+              },
+              "required": ["description", "impact"]
+            }
+          }
+        },
+        "required": ["strengths", "weaknesses", "opportunities", "threats"]
+      },
+      "strategic_recommendations": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "recommendation": {"type": "string"},
+            "rationale": {"type": "string"},
+            "related_insights": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "priority": {"type": "string", "enum": ["high", "medium", "low"]}
+          },
+          "required": ["recommendation", "rationale"]
+        }
+      },
+      "statistics": {
+        "type": "object",
+        "properties": {
+          "strengths_count": {"type": "integer"},
+          "weaknesses_count": {"type": "integer"},
+          "opportunities_count": {"type": "integer"},
+          "threats_count": {"type": "integer"},
+          "by_impact": {
+            "type": "object",
+            "properties": {
+              "high": {"type": "integer"},
+              "medium": {"type": "integer"},
+              "low": {"type": "integer"}
+            }
+          },
+          "recommendations_count": {"type": "integer"}
+        }
+      },
+      "metadata": {
+        "type": "object",
+        "properties": {
+          "document_name": {"type": "string"},
+          "meeting_date": {"type": "string"},
+          "word_count": {"type": "integer"},
+          "processing_time": {"type": "number"},
+          "date_analyzed": {"type": "string"},
+          "assessment_type": {"type": "string"},
+          "user_options": {"type": "object"}
+        }
+      }
+    },
+    "required": ["executive_summary", "swot_analysis", "strategic_recommendations", "statistics", "metadata"]
+  }

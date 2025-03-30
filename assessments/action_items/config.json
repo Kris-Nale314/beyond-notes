@@ -1,0 +1,107 @@
+{
+    "crew_type": "action_items",
+    "description": "Identifies concrete follow-up tasks and commitments from meeting transcripts",
+    
+    "action_item_definition": {
+      "description": "A specific, actionable task that requires follow-up after the meeting, typically with an owner and timeframe",
+      "priority_levels": {
+        "critical": "Must be completed urgently",
+        "high": "Important task requiring prompt attention",
+        "medium": "Standard priority task",
+        "low": "Task to be done when time permits"
+      },
+      "status_types": [
+        "assigned", "pending", "in_progress", "blocked", "completed"
+      ]
+    },
+    
+    "workflow": {
+      "enabled_stages": ["document_analysis", "chunking", "planning", "extraction", "aggregation", "evaluation", "formatting", "review"],
+      "agent_roles": {
+        "planner": {
+          "description": "Plans the analysis approach for action item identification",
+          "primary_task": "Create tailored instructions for identifying true action items vs general statements",
+          "instructions": "Study the document to identify its structure and purpose. Then create specific extraction and evaluation instructions for identifying real action items that require follow-up."
+        },
+        "extractor": {
+          "description": "Identifies potential action items from document chunks",
+          "primary_task": "Extract action-oriented statements with ownership and timing details",
+          "output_schema": {
+            "description": "Description of the action item",
+            "owner": "Person or group responsible",
+            "due_date": "When it should be completed",
+            "priority": "Initial priority assessment",
+            "confidence": "Confidence that this is a true action item requiring follow-up",
+            "context": "Surrounding context from the document"
+          },
+          "instructions": "Extract action-oriented statements that appear to be tasks, commitments, or follow-ups. Look for indicators like assigned ownership, deadlines, or explicit commitments. Include both clear action items and potential ones for later filtering."
+        },
+        "aggregator": {
+          "description": "Combines and deduplicates action items",
+          "primary_task": "Consolidate similar action items while preserving ownership and timing details",
+          "instructions": "Combine similar action items from different document sections. Preserve the most specific owner, due date, and priority information. Eliminate true duplicates but keep similar items that might represent different tasks."
+        },
+        "evaluator": {
+          "description": "Assesses if extracted items are true action items requiring follow-up",
+          "primary_task": "Filter out statements that aren't actual action items and assign final priorities",
+          "evaluation_criteria": [
+            "Actionability (is it clear what needs to be done)",
+            "Ownership (is someone responsible)",
+            "Timing (is there a timeframe)",
+            "Commitment (was it agreed upon)",
+            "Follow-up required (needs post-meeting attention)"
+          ],
+          "instructions": "Evaluate each potential action item to determine if it's a true action item requiring follow-up. Filter out general statements, hypotheticals, or discussion of past actions. A true action item should be clear, have an owner or way to assign ownership, and ideally have a timeframe. Assess priority based on urgency and importance mentioned."
+        },
+        "formatter": {
+          "description": "Creates a structured action item list",
+          "primary_task": "Format action items into a clear, actionable list organized by owner and priority",
+          "instructions": "Create a well-structured action item list that can be easily shared after a meeting. Organize by owner and then priority. Include all relevant details like due dates and context for each item."
+        },
+        "reviewer": {
+          "description": "Ensures action items are clear, actionable, and properly assigned",
+          "primary_task": "Verify action items have clear owners, actions, and timelines where possible",
+          "instructions": "Review the action item list for completeness and clarity. Ensure each item clearly states what needs to be done, who should do it, and when it should be completed (if specified). Check that no important action items from the document were missed."
+        }
+      },
+      "stage_weights": {
+        "document_analysis": 0.05,
+        "chunking": 0.05,
+        "planning": 0.10,
+        "extraction": 0.30,
+        "aggregation": 0.15,
+        "evaluation": 0.20,
+        "formatting": 0.10,
+        "review": 0.05
+      }
+    },
+    
+    "user_options": {
+      "detail_levels": {
+        "essential": "Include only clearly defined action items with owners",
+        "standard": "Include most action items with reasonable confidence",
+        "comprehensive": "Include all potential action items, even with lower confidence"
+      },
+      "format_options": {
+        "by_owner": "Group action items by owner",
+        "by_priority": "Group action items by priority",
+        "by_due_date": "Group action items by timeline",
+        "sequential": "List action items in the order they appeared"
+      }
+    },
+    
+    "report_format": {
+      "sections": [
+        "Summary",
+        "Action Items by Owner",
+        "Action Items by Due Date"
+      ],
+      "action_item_presentation": {
+        "owner": "Person responsible",
+        "description": "What needs to be done",
+        "due_date": "When it should be completed",
+        "priority": "Visual indicator of priority",
+        "context": "Meeting context"
+      }
+    }
+  }

@@ -1,0 +1,111 @@
+{
+    "type": "object",
+    "properties": {
+      "summary": {
+        "type": "string",
+        "description": "A brief summary of the key action items"
+      },
+      "action_items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "description": {
+              "type": "string",
+              "description": "Clear description of what needs to be done"
+            },
+            "owner": {
+              "type": "string",
+              "description": "Person or group responsible for this action item"
+            },
+            "due_date": {
+              "type": "string",
+              "description": "When this action item should be completed"
+            },
+            "priority": {
+              "type": "string",
+              "enum": ["critical", "high", "medium", "low"],
+              "description": "Priority level of the action item"
+            },
+            "status": {
+              "type": "string",
+              "enum": ["assigned", "pending", "in_progress", "blocked", "completed"],
+              "description": "Current status of the action item"
+            },
+            "context": {
+              "type": "string",
+              "description": "Meeting context where this action item was discussed"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Confidence score that this is a true action item (0-1)"
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "Source text supporting this action item"
+                  },
+                  "chunk_index": {
+                    "type": "integer",
+                    "description": "Index of the chunk containing this evidence"
+                  }
+                },
+                "required": ["text"]
+              }
+            }
+          },
+          "required": ["description", "owner", "priority"]
+        }
+      },
+      "statistics": {
+        "type": "object",
+        "properties": {
+          "total_action_items": {
+            "type": "integer",
+            "description": "Total number of action items identified"
+          },
+          "by_owner": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Count of action items by owner"
+          },
+          "by_priority": {
+            "type": "object",
+            "properties": {
+              "critical": {"type": "integer"},
+              "high": {"type": "integer"},
+              "medium": {"type": "integer"},
+              "low": {"type": "integer"}
+            }
+          },
+          "by_status": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "metadata": {
+        "type": "object",
+        "properties": {
+          "document_name": {"type": "string"},
+          "meeting_date": {"type": "string"},
+          "word_count": {"type": "integer"},
+          "processing_time": {"type": "number"},
+          "date_analyzed": {"type": "string"},
+          "assessment_type": {"type": "string"},
+          "user_options": {"type": "object"}
+        }
+      }
+    },
+    "required": ["summary", "action_items", "statistics", "metadata"]
+  }
