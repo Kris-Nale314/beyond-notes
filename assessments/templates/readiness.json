@@ -1,0 +1,184 @@
+{
+    "crew_type": "custom_readiness",
+    "description": "Template for custom readiness assessment - evaluate organizational capability and maturity across key dimensions",
+    
+    "readiness_definition": {
+      "description": "A comprehensive evaluation of an organization's capability and maturity across key dimensions",
+      "maturity_levels": {
+        "1": "Aware - Initial awareness but limited implementation",
+        "2": "Developing - Beginning implementation with limited integration",
+        "3": "Operational - Standard implementation across parts of the organization",
+        "4": "Advanced - Well-integrated implementation with measured outcomes",
+        "5": "Transformative - Strategic integration creating competitive advantage"
+      },
+      "default_dimensions": [
+        "strategy", "people", "data", "models", "platforms", "infrastructure"
+      ]
+    },
+    
+    "workflow": {
+      "enabled_stages": ["document_analysis", "chunking", "planning", "extraction", "aggregation", "evaluation", "formatting", "review"],
+      "agent_roles": {
+        "planner": {
+          "description": "Plans the readiness assessment approach based on organizational context",
+          "primary_task": "Create tailored instructions for identifying readiness indicators across dimensions",
+          "instructions": "Study the document to identify the organization's context, industry, and goals. Then create specific extraction and evaluation instructions that focus on readiness criteria across all specified dimensions."
+        },
+        "extractor": {
+          "description": "Identifies readiness indicators from document chunks",
+          "primary_task": "Extract statements that indicate readiness levels across dimensions",
+          "output_schema": {
+            "dimension": "The readiness dimension (strategy, people, data, etc.)",
+            "criteria": "Specific criteria being assessed within the dimension",
+            "evidence": "Text or statement supporting the readiness assessment",
+            "initial_rating": "Initial maturity rating (1-5)",
+            "confidence": "Confidence in this assessment (low/medium/high)",
+            "context": "Additional context about this readiness aspect"
+          },
+          "instructions": "Extract statements that indicate readiness levels across all dimensions. For each dimension, identify specific criteria and evidence of the organization's current state. Assign initial maturity ratings based on the 1-5 scale."
+        },
+        "aggregator": {
+          "description": "Combines readiness assessments across document sections",
+          "primary_task": "Consolidate readiness indicators while preserving dimension structure",
+          "instructions": "Combine readiness assessments from all document chunks while maintaining the dimension structure. For each dimension and criteria, combine relevant evidence and reconcile any conflicting ratings."
+        },
+        "evaluator": {
+          "description": "Provides final maturity ratings and identifies gaps",
+          "primary_task": "Assign final maturity ratings and identify improvement opportunities",
+          "evaluation_criteria": [
+            "Evidence quality (how strong is the supporting evidence)",
+            "Implementation breadth (how widespread across the organization)",
+            "Implementation depth (how deeply integrated into processes)",
+            "Strategic alignment (how well aligned with organizational goals)",
+            "Outcomes and results (measurable impact achieved)"
+          ],
+          "instructions": "Evaluate each readiness dimension and criteria against the assessment rubric. Assign final maturity ratings based on evidence quality and implementation. Identify key gaps and improvement opportunities."
+        },
+        "formatter": {
+          "description": "Creates the structured readiness assessment report",
+          "primary_task": "Format the assessment into a clear report with ratings and recommendations",
+          "instructions": "Format the readiness assessment into a structured report with clear ratings for each dimension and criteria. Include an executive summary, detailed dimension assessments, gap analysis, and strategic recommendations."
+        },
+        "reviewer": {
+          "description": "Ensures assessment quality and actionable recommendations",
+          "primary_task": "Verify consistency, evidence-based ratings, and actionable next steps",
+          "instructions": "Review the generated report for consistency across dimensions, evidence-based ratings, and actionable recommendations. Ensure the assessment provides clear guidance for improvement."
+        }
+      },
+      "stage_weights": {
+        "document_analysis": 0.05,
+        "chunking": 0.05,
+        "planning": 0.15,
+        "extraction": 0.25,
+        "aggregation": 0.15,
+        "evaluation": 0.20,
+        "formatting": 0.10,
+        "review": 0.05
+      }
+    },
+    
+    "user_options": {
+      "detail_levels": {
+        "essential": "Focus on critical dimensions with high-level assessment",
+        "standard": "Balanced assessment across all dimensions",
+        "comprehensive": "In-depth assessment with detailed analysis of all criteria"
+      },
+      "dimensions": {
+        "required": true,
+        "description": "Customize which dimensions to assess",
+        "default_selection": ["strategy", "people", "data", "models", "platforms", "infrastructure"]
+      },
+      "criteria_customization": {
+        "required": false,
+        "description": "Customize specific criteria within dimensions",
+        "structure": {
+          "dimension_name": {
+            "criteria": ["criterion1", "criterion2", "criterion3"]
+          }
+        }
+      },
+      "customizations": {
+        "maturity_levels": {
+          "description": "Customize maturity level definitions",
+          "required": false
+        },
+        "dimensions": {
+          "description": "Customize dimensions to assess",
+          "required": false
+        },
+        "evaluation_criteria": {
+          "description": "Customize evaluation criteria",
+          "required": false
+        }
+      }
+    },
+    
+    "default_criteria": {
+      "strategy": [
+        "Executive understanding and sponsorship of initiatives",
+        "Clear vision and goals aligned with business objectives",
+        "Defined roadmap with measurable milestones",
+        "Investment commitment and budgeting process",
+        "Governance framework and decision-making process"
+      ],
+      "people": [
+        "Leadership capabilities and expertise",
+        "Talent acquisition and retention strategy",
+        "Skills assessment and training programs",
+        "Cross-functional collaboration mechanisms",
+        "Change management and adoption practices",
+        "Organizational structure supporting initiatives"
+      ],
+      "data": [
+        "Data strategy and governance frameworks",
+        "Data quality assessment and improvement processes",
+        "Data collection and storage infrastructure",
+        "Data access and sharing policies",
+        "Data privacy and security measures",
+        "Data integration across systems"
+      ],
+      "models": [
+        "Model development capabilities and practices",
+        "Model evaluation and validation procedures",
+        "Model deployment and operations processes",
+        "Model monitoring and maintenance protocols",
+        "Use case identification and prioritization",
+        "Ethical considerations and responsible practices"
+      ],
+      "platforms": [
+        "Technology architecture supporting initiatives",
+        "Platform selection and integration approach",
+        "Scalability and performance capabilities",
+        "Vendor management and partnership strategy",
+        "Platform governance and standardization"
+      ],
+      "infrastructure": [
+        "Computing resources and capacity planning",
+        "Storage solutions and data management",
+        "Network capabilities and connectivity",
+        "Security infrastructure and protocols",
+        "Operational support and monitoring systems",
+        "Disaster recovery and business continuity planning"
+      ]
+    },
+    
+    "report_format": {
+      "sections": [
+        "Executive Summary",
+        "Assessment Methodology",
+        "Overall Readiness Profile",
+        "Dimension-by-Dimension Analysis",
+        "Gap Analysis",
+        "Strategic Recommendations",
+        "Implementation Roadmap"
+      ],
+      "readiness_presentation": {
+        "dimension": "Major readiness dimension",
+        "criteria": "Specific assessment criteria",
+        "rating": "Maturity rating (1-5)",
+        "rationale": "Evidence-based explanation for rating",
+        "gaps": "Identified capability gaps",
+        "recommendations": "Specific improvement recommendations"
+      }
+    }
+  }

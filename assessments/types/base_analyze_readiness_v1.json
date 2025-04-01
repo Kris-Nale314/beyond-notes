@@ -1,0 +1,127 @@
+{
+  "assessment_id": "base_analyze_readiness_v1",
+  "assessment_type": "analyze",
+  "version": "1.0",
+  "display_name": "Framework Analysis (Readiness)",
+  "description": "Evaluates content against a structured readiness framework",
+
+  "output_definition": {},
+  "entity_definition": {},
+  "framework_definition": {
+    "name": "readiness_framework",
+    "description": "Assesses organizational readiness across key dimensions",
+    "dimensions": [
+      {"name": "strategy", "display_name": "Strategy", "description": "Strategic alignment", "criteria": [{"name": "executive_sponsorship", "display_name": "Sponsorship"}, {"name": "vision_alignment", "display_name": "Vision/Alignment"}, {"name": "roadmap", "display_name": "Roadmap"}, {"name": "investment", "display_name": "Investment"}]},
+      {"name": "people", "display_name": "People", "description": "Talent and capabilities", "criteria": [{"name": "leadership", "display_name": "Leadership"}, {"name": "talent_strategy", "display_name": "Talent Strategy"}, {"name": "skills_development", "display_name": "Skills"}, {"name": "collaboration", "display_name": "Collaboration"}]},
+      {"name": "data", "display_name": "Data", "description": "Data management", "criteria": [{"name": "data_strategy", "display_name": "Data Strategy"}, {"name": "data_quality", "display_name": "Quality"}, {"name": "data_access", "display_name": "Access"}, {"name": "data_governance", "display_name": "Governance"}]},
+      {"name": "technology", "display_name": "Technology", "description": "Infrastructure", "criteria": [{"name": "infrastructure", "display_name": "Infrastructure"}, {"name": "architecture", "display_name": "Architecture"}, {"name": "tools", "display_name": "Tools"}, {"name": "security", "display_name": "Security"}]},
+      {"name": "process", "display_name": "Process", "description": "Operations", "criteria": [{"name": "methodology", "display_name": "Methodology"}, {"name": "governance", "display_name": "Governance"}, {"name": "measurement", "display_name": "Measurement"}, {"name": "improvement", "display_name": "Improvement"}]}
+    ],
+    "rating_scale": {
+      "name": "maturity_scale",
+      "levels": [
+        {"value": 1, "name": "Aware", "display_name": "Level 1: Aware", "description": "Initial awareness", "characteristics": ["Basic understanding", "Ad hoc approaches"]},
+        {"value": 2, "name": "Developing", "display_name": "Level 2: Developing", "description": "Beginning implementation", "characteristics": ["Starting implementation", "Some documented process"]},
+        {"value": 3, "name": "Operational", "display_name": "Level 3: Operational", "description": "Standard implementation", "characteristics": ["Consistent implementation", "Regular usage"]},
+        {"value": 4, "name": "Advanced", "display_name": "Level 4: Advanced", "description": "Well-integrated", "characteristics": ["Integrated across org", "Strong measurement"]},
+        {"value": 5, "name": "Transformative", "display_name": "Level 5: Transformative", "description": "Strategic advantage", "characteristics": ["Org-wide alignment", "Industry leading"]}
+      ]
+    }
+  },
+
+  "extraction_criteria": {}, 
+
+  "workflow": {
+    "enabled_stages": [
+      "document_analysis",
+      "chunking",
+      "planning",
+      "extraction",
+      "aggregation",
+      "evaluation",
+      "formatting"
+      
+    ],
+    "agent_instructions": {
+      "planner": "Review the document and the framework_definition. Create extraction instructions to identify evidence relevant to each framework dimension and criteria.",
+      "extractor": "For each chunk, identify statements providing evidence for framework_definition dimensions/criteria. Note the dimension/criteria, extract evidence text, and provide an initial maturity rating based on framework_definition.rating_scale.",
+      "aggregator": "Combine evidence from all chunks for each dimension/criteria defined in framework_definition. Reconcile conflicting evidence/ratings.",
+      "evaluator": "Conduct a holistic assessment of each dimension based on aggregated evidence. Assign final ratings per criteria and dimension using framework_definition.rating_scale. Justify ratings with evidence and identify gaps/strengths.",
+      "formatter": "Create a comprehensive assessment report based on output_schema and output_format. Present findings per dimension, include overall maturity profile, and strategic recommendations. Use framework_definition for labels and rating descriptions."
+    },
+    "stage_weights": {
+      "document_analysis": 0.05,
+      "chunking": 0.05,
+      "planning": 0.15,
+      "extraction": 0.30,
+      "aggregation": 0.10,
+      "evaluation": 0.20,
+      "formatting": 0.15
+    }
+  },
+  "user_options": {
+    "detail_level": {
+      "type": "select",
+      "options": {"essential": "High-level findings", "standard": "Balanced assessment", "comprehensive": "Detailed analysis"},
+      "default": "standard",
+      "display_name": "Assessment Detail",
+      "description": "Controls the level of detail in the assessment"
+    },
+    "focus_dimensions": {
+      "type": "multi_select",
+      "options": "dynamic_from_dimensions", 
+      "default": [],
+      "display_name": "Focus Dimensions",
+      "description": "Optionally limit assessment to specific dimensions (empty means all)"
+    },
+    "client_context": { 
+      "type": "form",
+      "required": true,
+      "display_name": "Assessment Context",
+      "description": "Provide context about the organization being assessed",
+      "fields": {
+        "client_name": {"type": "text", "required": true, "display_name": "Organization Name"},
+        "industry": {"type": "text", "required": true, "display_name": "Industry"},
+        "size": {"type": "text", "required": false, "display_name": "Organization Size"},
+        "objectives": {"type": "textarea", "required": true, "display_name": "Assessment Objectives"},
+        "additional_context": {"type": "textarea", "required": false, "display_name": "Additional Context"}
+      }
+    }
+  },
+  "output_format": {
+    "sections": ["executive_summary", "assessment_methodology", "overall_maturity_profile", "dimension_assessments", "gap_analysis", "strategic_recommendations"],
+    "presentation": {"maturity_indicator": "numbered_with_color", "evidence_display": "collapsible_sections", "dimension_ordering": "rating_descending"}
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "executive_summary": {"type": "string", "description": "Concise summary of overall readiness"},
+      "assessment_methodology": {"type": "object", "properties": {"approach": {"type": "string"}, "dimensions_assessed": {"type": "array"}, "rating_scale": {"type": "object"}, "data_sources": {"type": "string"}}},
+      "overall_maturity": {"type": "object", "properties": {"overall_rating": {"type": "number"}, "summary_statement": {"type": "string"}, "dimension_ratings": {"type": "object"}, "maturity_profile": {"type": "string"}}},
+      "dimension_assessments": { 
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "dimension_name": {"type": "string"},
+            "dimension_rating": {"type": "number"},
+            "dimension_summary": {"type": "string"},
+            "criteria_assessments": {"type": "array", "items": {"type": "object", "properties": {"criteria_name": {}, "rating": {}, "rationale": {}, "evidence": {}, "gaps": {}}}},
+            "strengths": {"type": "array"}, "weaknesses": {"type": "array"}, "dimension_recommendations": {"type": "array"}
+          }
+        }
+      },
+      "gap_analysis": {"type": "object", "properties": {"summary": {"type": "string"}, "critical_gaps": {"type": "array"}}},
+      "strategic_recommendations": {"type": "array", "items": {"type": "object", "properties": {"recommendation": {}, "dimensions_affected": {}, "rationale": {}, "expected_benefits": {}, "priority": {}, "timeframe": {}}}},
+      "metadata": {"type": "object", "properties": {"organization_name": {"type": "string"}, "assessment_date": {"type": "string"}, "document_name": {"type": "string"}, "word_count": {"type": "integer"}, "processing_time": {"type": "number"}, "assessment_id": {"type": "string"}, "user_options": {"type": "object"}}}
+    },
+    "required": ["executive_summary", "assessment_methodology", "overall_maturity", "dimension_assessments", "strategic_recommendations", "metadata"]
+  },
+  "metadata": {
+    "created_date": "2025-03-31",
+    "last_modified_date": "2025-03-31",
+    "created_by": "System",
+    "is_template": false,
+    "base_assessment_id": null
+  }
+}

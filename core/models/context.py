@@ -2,877 +2,1062 @@
 import time
 import uuid
 import json
-from datetime import datetime
-from typing import Dict, Any, List, Optional, Callable, Set, Union
+from datetime import datetime, timezone
+import logging
+from typing import Dict, Any, List, Optional, Callable, Union
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 class ProcessingContext:
     """
-    Enhanced context object for document processing pipelines.
-    Manages state, metadata, results, relationships, and metrics throughout processing.
-    Serves as the shared brain for multi-agent document analysis.
-    """
+    Enhanced context manager for multi-agent document processing.
     
-    def __init__(self, document_text: str, options: Optional[Dict[str, Any]] = None):
-        """Initialize processing context with document and options."""
-        # Core content
+    Provides a streamlined interface for agents to store and retrieve data,
+    track document chunks, entities, relationships, and evidence in a 
+    consistent and predictable structure.
+    """
+
+    def __init__(self, 
+                 document_text: str,
+                 assessment_config: Dict[str, Any],
+                 options: Optional[Dict[str, Any]] = None):
+        """Initialize the processing context."""
+        # Core document data
         self.document_text = document_text
+        self.assessment_config = assessment_config
         self.options = options or {}
         
-        # Assessment configuration
-        self.assessment_type = self.options.get("assessment_type", "default")
-        self.assessment_config = self.options.get("assessment_config", {})
+        # Assessment identifiers
+        self.assessment_id = assessment_config.get("assessment_id", "unknown")
+        self.assessment_type = assessment_config.get("assessment_type", "unknown")
+        self.display_name = assessment_config.get("display_name", self.assessment_id)
         
-        # Document information
+        # Run metadata
+        self.run_id = f"run-{uuid.uuid4().hex[:8]}"
+        self.start_time = time.time()
+        
+        # Document info
         self.document_info = {
-            "created_at": datetime.now().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "word_count": len(document_text.split()),
             "character_count": len(document_text),
-            "processed_by": []  # List of agent names that have processed this document
+            "filename": options.get("filename", "unknown"),
+            "processed_by": []  # Agent names involved
         }
         
-        # Chunking information
-        self.chunks = []
-        self.chunk_metadata = []
-        self.chunk_mapping = {}  # Maps text spans to chunk indices
+        # Chunking data
+        self.chunks = []  # List of document chunks
+        self.chunk_mapping = {}  # Maps text spans (start, end) to chunk indices
         
-        # Entity registry - central repository of all identified entities
-        self.entities = {}
-        
-        # Extracted information by type
-        self.extracted_info = {
-            "issues": [],        # Extracted issues
-            "action_items": [],  # Extracted action items
-            "key_points": [],    # Key points/insights
-            "entities": [],      # People, organizations, etc.
-            "custom": {},        # Custom extraction types
+        # Pipeline state tracking
+        self.pipeline_state = {
+            "current_stage": None,
+            "stages": {},      # Status, timing per stage
+            "progress": 0.0,
+            "progress_message": "Initializing",
+            "warnings": [],
+            "errors": []
         }
         
-        # Evaluation results
-        self.evaluations = {}
+        # Token usage tracking
+        self.usage_metrics = {
+            "total_tokens": 0,
+            "stage_tokens": {},
+            "llm_calls": 0,
+            "stage_durations": {}
+        }
         
-        # Evidence tracking - maps conclusions to supporting text
-        self.evidence = {}
+        # Entity and relationship tracking
+        self.entities = {}  # Central registry of entities
+        self.relationships = []  # Relationships between items/entities
         
-        # Source reference tracking
-        self.source_references = {}
+        # Main data store with clear, predictable paths
+        self.data = {
+            # Planning phase results
+            "planning": {},
+            
+            # Extraction phase results by assessment type
+            "extracted": {
+                "action_items": [],  # extract
+                "issues": [],        # assess
+                "key_points": [],    # distill
+                "evidence": [],      # analyze
+                "entities": []       # All types
+            },
+            
+            # Aggregation phase results
+            "aggregated": {
+                "action_items": [],  # extract
+                "issues": [],        # assess
+                "key_points": [],    # distill
+                "evidence": [],      # analyze
+                "entities": []       # All types
+            },
+            
+            # Evaluation phase results
+            "evaluated": {
+                "action_items": [],  # extract
+                "issues": [],        # assess
+                "key_points": [],    # distill
+                "evidence": [],      # analyze
+                "overall_assessment": {}  # For all types
+            },
+            
+            # Formatting phase results (final output)
+            "formatted": {}
+        }
         
-        # Relationships between extracted elements
-        self.relationships = []
+        # Evidence tracking
+        self.evidence_store = {
+            "references": {},  # item_id -> list of source text references
+            "sources": {}      # source_id -> source text and metadata
+        }
         
-        # Results storage by stage
-        self.results = {}
+        # Temporary compatibility layer
+        self.results = {}  # Legacy results storage
         
-        # Version history of processing stages
-        self.history = []
+        # Progress callback
+        self.progress_callback = None
         
-        # Initialize metrics dynamically based on assessment type
-        self._initialize_metrics()
-        
-        # Processing metadata
-        self.run_id = f"run-{uuid.uuid4().hex[:8]}"
+        # Initialize metadata sharing
         self.metadata = {
-            "start_time": time.time(),
+            "start_time": self.start_time,
             "run_id": self.run_id,
             "current_stage": None,
             "stages": {},
             "errors": [],
             "warnings": [],
             "progress": 0.0,
-            "progress_message": "Initializing",
-            "agent_logs": []
+            "progress_message": "Initializing"
         }
         
-        # Progress callback
-        self.progress_callback = None
-    
-    def _initialize_metrics(self):
-        """Initialize metrics based on assessment configuration."""
-        # Base metrics structure
-        self.metrics = {
-            "extractions": {},
-            "processing": {
-                "stage_durations": {},
-                "agent_calls": {},
-                "tokens_used": 0
-            },
-            "quality": {}
-        }
-        
-        # Get extraction types from assessment config if available
-        assessment_config = self.assessment_config
-        if assessment_config:
-            workflow = assessment_config.get("workflow", {})
-            agent_roles = workflow.get("agent_roles", {})
-            
-            # Get extractor output schema if available
-            if "extractor" in agent_roles:
-                extractor_config = agent_roles["extractor"]
-                output_schema = extractor_config.get("output_schema", {})
-                
-                # Initialize metrics for each extraction type in schema
-                for key in output_schema.keys():
-                    self.metrics["extractions"][key] = 0
-        
-        # Default extraction types if none found in config
-        if not self.metrics["extractions"]:
-            default_types = {
-                "issues": ["issues", "entities", "key_points"],
-                "action_items": ["action_items", "owners", "deadlines"],
-                "default": ["items"]
-            }
-            
-            for type_name in default_types.get(self.assessment_type, default_types["default"]):
-                self.metrics["extractions"][type_name] = 0
-    
-    def track_extraction(self, extraction_type: str, count: int = 1) -> None:
-        """
-        Track extraction metrics for any extraction type.
-        
-        Args:
-            extraction_type: Type of extraction to track
-            count: Number to increment by
-        """
-        if extraction_type not in self.metrics["extractions"]:
-            self.metrics["extractions"][extraction_type] = 0
-        
-        self.metrics["extractions"][extraction_type] += count
-    
-    def track_token_usage(self, tokens: int) -> None:
-        """
-        Track token usage for API calls.
-        
-        Args:
-            tokens: Number of tokens used
-        """
-        self.metrics["processing"]["tokens_used"] += tokens
-    
-    def record_agent_call(self, agent_name: str, operation: str) -> None:
-        """
-        Record an agent API call.
-        
-        Args:
-            agent_name: Name of the agent
-            operation: Type of operation
-        """
-        if agent_name not in self.metrics["processing"]["agent_calls"]:
-            self.metrics["processing"]["agent_calls"][agent_name] = {}
-        
-        if operation not in self.metrics["processing"]["agent_calls"][agent_name]:
-            self.metrics["processing"]["agent_calls"][agent_name][operation] = 0
-        
-        self.metrics["processing"]["agent_calls"][agent_name][operation] += 1
+        logger.info(f"ProcessingContext initialized: {self.run_id} - {self.display_name}")
+
+    # ---------- Stage & Progress Management ----------
     
     def set_stage(self, stage_name: str) -> None:
         """Begin a processing stage."""
-        # Record start time for duration tracking
-        stage_start_time = time.time()
-        
+        self.pipeline_state["current_stage"] = stage_name
         self.metadata["current_stage"] = stage_name
-        self.metadata["stages"][stage_name] = {
+        
+        # Create stage record
+        stage_info = {
             "status": "running",
-            "start_time": stage_start_time,
-            "progress": 0.0
+            "start_time": time.time(),
+            "end_time": None,
+            "duration": None,
+            "progress": 0.0,
+            "message": "Starting...",
+            "agent": None,
+            "error": None
         }
         
-        # Add to history
-        self.history.append({
-            "timestamp": stage_start_time,
-            "type": "stage_start",
-            "stage": stage_name
-        })
+        # Store in both places for compatibility
+        self.pipeline_state["stages"][stage_name] = stage_info
+        self.metadata["stages"][stage_name] = stage_info
         
-        # Update progress message
-        self.update_progress(self.metadata["progress"], f"Starting {stage_name}")
-    
-    def register_agent(self, stage_name: str, agent_name: str) -> None:
-        """Register an agent as handling a particular stage."""
-        if stage_name in self.metadata["stages"]:
-            self.metadata["stages"][stage_name]["agent"] = agent_name
-            
-            # Make sure processed_by exists in document_info
-            if "processed_by" not in self.document_info:
-                self.document_info["processed_by"] = []
-                
-            # Add to document processors if not already there
-            if agent_name not in self.document_info["processed_by"]:
-                self.document_info["processed_by"].append(agent_name)
-    
-    def complete_stage(self, stage_name: str, result: Any = None) -> None:
-        """Complete a processing stage and store result."""
-        if stage_name not in self.metadata["stages"]:
+        logger.info(f"[{self.run_id}] Starting stage: {stage_name}")
+        self.update_progress(self.pipeline_state["progress"], f"Starting {stage_name}")
+
+    def complete_stage(self, stage_name: str, stage_result: Any = None) -> None:
+        """Mark a stage as completed."""
+        if stage_name not in self.pipeline_state["stages"]:
+            logger.warning(f"Attempting to complete unknown stage: {stage_name}")
             self.set_stage(stage_name)
             
-        # Calculate stage duration
-        stage = self.metadata["stages"][stage_name]
-        stage["status"] = "completed"
-        stage["end_time"] = time.time()
-        stage["duration"] = stage["end_time"] - stage["start_time"]
-        
-        # Record duration in metrics
-        self.metrics["processing"]["stage_durations"][stage_name] = stage["duration"]
-        
-        # Store result
-        if result is not None:
-            self.results[stage_name] = result
-        
-        # Add to history
-        self.history.append({
-            "timestamp": time.time(),
-            "type": "stage_complete",
-            "stage": stage_name
-        })
-        
-        # Update progress
-        self.update_progress(self.metadata["progress"], f"Completed {stage_name}")
-    
-    def fail_stage(self, stage_name: str, error: str) -> None:
-        """Mark a stage as failed."""
         # Update stage info
+        stage = self.pipeline_state["stages"][stage_name]
+        end_time = time.time()
+        duration = end_time - stage.get("start_time", end_time)
+        
+        stage_update = {
+            "status": "completed",
+            "end_time": end_time,
+            "duration": duration,
+            "progress": 1.0,
+            "message": "Completed successfully"
+        }
+        
+        # Update in both places
+        stage.update(stage_update)
         if stage_name in self.metadata["stages"]:
-            stage = self.metadata["stages"][stage_name]
-            stage["status"] = "failed"
-            stage["end_time"] = time.time()
-            stage["duration"] = stage["end_time"] - stage["start_time"]
-            stage["error"] = error
-            
-            # Record duration in metrics
-            self.metrics["processing"]["stage_durations"][stage_name] = stage["duration"]
-        else:
-            # Handle failure for stage that wasn't started
-            self.metadata["stages"][stage_name] = {
-                "status": "failed",
-                "start_time": time.time(),
-                "end_time": time.time(),
-                "duration": 0,
-                "error": error
-            }
-            
-        # Add to errors list
-        self.metadata["errors"].append({
-            "stage": stage_name,
-            "message": error,
-            "time": time.time()
-        })
+            self.metadata["stages"][stage_name].update(stage_update)
         
-        # Add to history
-        self.history.append({
-            "timestamp": time.time(),
-            "type": "stage_fail",
-            "stage": stage_name,
-            "error": error
-        })
+        # Store duration for metrics
+        self.usage_metrics["stage_durations"][stage_name] = duration
         
-        # Update progress with error
-        self.update_progress(self.metadata["progress"], f"Error in {stage_name}: {error}")
-    
+        # Store result in legacy location if provided
+        if stage_result is not None:
+            self.results[stage_name] = stage_result
+        
+        logger.info(f"[{self.run_id}] Completed stage: {stage_name} in {duration:.2f}s")
+        
+        # Update overall progress
+        self._update_overall_progress()
+        
+    def fail_stage(self, stage_name: str, error_msg: str) -> None:
+        """Mark a stage as failed."""
+        if stage_name not in self.pipeline_state["stages"]:
+            logger.warning(f"Attempting to fail unknown stage: {stage_name}")
+            self.set_stage(stage_name)
+            
+        # Update stage info
+        stage = self.pipeline_state["stages"][stage_name]
+        end_time = time.time()
+        duration = end_time - stage.get("start_time", end_time)
+        
+        stage_update = {
+            "status": "failed",
+            "end_time": end_time,
+            "duration": duration,
+            "error": error_msg,
+            "message": f"Failed: {error_msg[:100]}..."
+        }
+        
+        # Update in both places
+        stage.update(stage_update)
+        if stage_name in self.metadata["stages"]:
+            self.metadata["stages"][stage_name].update(stage_update)
+        
+        # Add to central error list in both places
+        error_entry = {
+            "stage": stage_name,
+            "message": error_msg,
+            "time": end_time
+        }
+        self.pipeline_state["errors"].append(error_entry)
+        self.metadata["errors"].append(error_entry)
+        
+        # Store duration for metrics
+        self.usage_metrics["stage_durations"][stage_name] = duration
+        
+        logger.error(f"[{self.run_id}] Failed stage: {stage_name} - {error_msg}")
+        
+        # Update overall progress
+        self._update_overall_progress()
+        
     def update_stage_progress(self, progress: float, message: Optional[str] = None) -> None:
         """Update progress for the current stage."""
-        current_stage = self.metadata.get("current_stage")
-        if not current_stage:
+        current_stage = self.pipeline_state.get("current_stage")
+        if not current_stage or current_stage not in self.pipeline_state["stages"]:
+            logger.warning(f"Cannot update progress for invalid stage: {current_stage}")
             return
             
-        # Ensure progress is within bounds
+        stage = self.pipeline_state["stages"][current_stage]
+        if stage["status"] != "running":
+            return
+            
         progress = max(0.0, min(1.0, progress))
-        
-        # Update stage progress
-        stage = self.metadata["stages"][current_stage]
         stage["progress"] = progress
         
+        # Update in both places
         if message:
             stage["message"] = message
-        
-        # Update overall progress based on stage weights
+            
+        if current_stage in self.metadata["stages"]:
+            self.metadata["stages"][current_stage]["progress"] = progress
+            if message:
+                self.metadata["stages"][current_stage]["message"] = message
+            
         self._update_overall_progress()
-    
+        
+    def _update_overall_progress(self) -> None:
+        """Recalculate overall progress based on stages."""
+        stages = self.pipeline_state["stages"]
+        if not stages:
+            return
+            
+        # Get stage weights from config or use equal weights
+        stage_weights = self.assessment_config.get("workflow", {}).get("stage_weights", {})
+        enabled_stages = self.assessment_config.get("workflow", {}).get("enabled_stages", list(stages.keys()))
+        
+        total_weight = 0
+        weighted_progress = 0.0
+        
+        for stage_name, stage in stages.items():
+            if stage_name not in enabled_stages:
+                continue
+                
+            # Get weight (default to equal weighting)
+            weight = stage_weights.get(stage_name, 1.0 / len(enabled_stages))
+            total_weight += weight
+            
+            # Calculate progress contribution
+            if stage["status"] == "completed":
+                stage_progress = 1.0
+            elif stage["status"] == "failed":
+                stage_progress = stage.get("progress", 0.0)
+            else:
+                stage_progress = stage.get("progress", 0.0)
+                
+            weighted_progress += weight * stage_progress
+            
+        # Update overall progress
+        if total_weight > 0:
+            overall_progress = min(1.0, weighted_progress / total_weight)
+            self.pipeline_state["progress"] = overall_progress
+            self.metadata["progress"] = overall_progress
+            
+        # Call progress callback if set
+        if self.progress_callback:
+            try:
+                self.progress_callback(
+                    self.pipeline_state["progress"], 
+                    self.pipeline_state.get("progress_message", "Processing...")
+                )
+            except Exception as e:
+                logger.error(f"Error in progress callback: {e}")
+                
+    def set_progress_callback(self, callback: Callable[[float, str], None]) -> None:
+        """Set the progress callback function."""
+        self.progress_callback = callback
+        
+    # Fix for the progress callback in ProcessingContext
+    # Add this to the update_progress method in ProcessingContext
     def update_progress(self, progress: float, message: str) -> None:
-        """Update overall progress and call the progress callback if provided."""
+        """Update overall progress and invoke the callback."""
         # Ensure progress is within bounds
         progress = max(0.0, min(1.0, progress))
         
-        # Update metadata
+        # Ensure message is a string
+        if message is None:
+            message = "Processing..."
+        
+        # Convert any object to string safely
+        try:
+            message = str(message)
+        except:
+            message = "Processing..."
+        
+        # Update state
+        self.pipeline_state["progress"] = progress
+        self.pipeline_state["progress_message"] = message
+        
+        # Update metadata too (for backward compatibility)
         self.metadata["progress"] = progress
         self.metadata["progress_message"] = message
         
-        # Add to history
-        self.history.append({
-            "timestamp": time.time(),
-            "type": "progress_update",
-            "progress": progress,
-            "message": message
-        })
+        # Add to history if the method exists
+        try:
+            self._add_history("progress_update", {"progress": progress, "message": message})
+        except AttributeError:
+            # If _add_history doesn't exist, just continue
+            pass
         
         # Call progress callback if provided
         if self.progress_callback:
             try:
+                # Pass progress and message to callback
                 self.progress_callback(progress, message)
             except Exception as e:
-                self.add_warning(f"Error in progress callback: {str(e)}")
+                # Log error but don't throw or add new warnings which would call this again
+                logger.error(f"Error in progress callback: {str(e)}", exc_info=False)
+                # Don't try to add a warning here as it might cause infinite recursion    
+        
+    # ---------- Warnings & Errors ----------
     
-    def _update_overall_progress(self) -> None:
-        """Update overall progress based on stage progress and weights."""
-        # Get stage weights from assessment config or use defaults
-        stage_weights = self.assessment_config.get("workflow", {}).get("stage_weights", {
-            "document_analysis": 0.05,
-            "chunking": 0.05,
-            "planning": 0.10,
-            "extraction": 0.30,
-            "aggregation": 0.20,
-            "evaluation": 0.15,
-            "formatting": 0.10,
-            "review": 0.05
-        })
-        
-        total_weight = 0
-        weighted_progress = 0
-        
-        for stage_name, stage_data in self.metadata["stages"].items():
-            weight = stage_weights.get(stage_name, 0.1)
-            total_weight += weight
-            
-            if stage_data["status"] == "completed":
-                weighted_progress += weight
-            elif stage_data["status"] == "running":
-                weighted_progress += weight * stage_data.get("progress", 0)
-        
-        # Calculate overall progress
-        if total_weight > 0:
-            overall_progress = weighted_progress / total_weight
-            self.metadata["progress"] = overall_progress
-    
-    def add_warning(self, message: str) -> None:
-        """Add a warning message to the context."""
+    def add_warning(self, message: str, stage: Optional[str] = None) -> None:
+        """Add a warning message."""
+        stage = stage or self.pipeline_state.get("current_stage")
         warning = {
+            "stage": stage,
             "message": message,
-            "time": time.time(),
-            "stage": self.metadata.get("current_stage")
+            "time": time.time()
         }
         
+        # Store in both places
+        self.pipeline_state["warnings"].append(warning)
         self.metadata["warnings"].append(warning)
         
-        # Add to history
-        self.history.append({
-            "timestamp": time.time(),
-            "type": "warning",
-            "message": message,
-            "stage": self.metadata.get("current_stage")
-        })
+        logger.warning(f"[{self.run_id}] Warning ({stage}): {message}")
+        
+    # ---------- Agent Registration ----------
     
-    def log_agent_action(self, agent_name: str, action: str, details: Optional[Dict[str, Any]] = None) -> None:
-        """Log an agent action for transparency and debugging."""
-        log_entry = {
-            "timestamp": time.time(),
-            "agent": agent_name,
-            "action": action,
-            "stage": self.metadata.get("current_stage"),
-            "details": details or {}
-        }
-        
-        if "agent_logs" not in self.metadata:
-            self.metadata["agent_logs"] = []
+    def register_agent(self, stage_name: str, agent_name: str) -> None:
+        """Register which agent is handling a stage."""
+        if stage_name in self.pipeline_state["stages"]:
+            self.pipeline_state["stages"][stage_name]["agent"] = agent_name
             
-        self.metadata["agent_logs"].append(log_entry)
+            # Update in metadata too
+            if stage_name in self.metadata["stages"]:
+                self.metadata["stages"][stage_name]["agent"] = agent_name
+            
+            # Add to document processors
+            if agent_name not in self.document_info["processed_by"]:
+                self.document_info["processed_by"].append(agent_name)
+                
+    # ---------- Token Usage Tracking ----------
+    
+    def track_token_usage(self, tokens: int) -> None:
+        """Track token usage for current stage and overall."""
+        if tokens <= 0:
+            return
+            
+        self.usage_metrics["total_tokens"] += tokens
         
-        # Track agent call for metrics
-        if action in ["generate_completion", "generate_structured_output"]:
-            self.record_agent_call(agent_name, action)
+        # Track by stage if available
+        current_stage = self.pipeline_state.get("current_stage")
+        if current_stage:
+            stage_tokens = self.usage_metrics["stage_tokens"].get(current_stage, 0)
+            self.usage_metrics["stage_tokens"][current_stage] = stage_tokens + tokens
+            
+        # Increment LLM call counter
+        self.usage_metrics["llm_calls"] += 1
+        
+    # ---------- Document Chunking ----------
     
     def set_chunks(self, chunks: List[Dict[str, Any]]) -> None:
         """Set document chunks and build chunk mapping."""
         self.chunks = chunks
-        self.chunk_metadata = [{
-            "chunk_index": chunk.get("chunk_index", i),
-            "word_count": chunk.get("word_count", len(chunk.get("text", "").split())),
-            "start_position": chunk.get("start_position", 0),
-            "end_position": chunk.get("end_position", 0)
-        } for i, chunk in enumerate(chunks)]
         
-        # Build chunk mapping for text span lookups
+        # Rebuild chunk mapping
+        self.chunk_mapping = {}
         for i, chunk in enumerate(chunks):
             start_pos = chunk.get("start_position", 0)
             end_pos = chunk.get("end_position", 0)
             self.chunk_mapping[(start_pos, end_pos)] = i
-    
+            
+            # Ensure chunk has an index
+            if "chunk_index" not in chunk:
+                chunk["chunk_index"] = i
+        
+        logger.info(f"[{self.run_id}] Set {len(chunks)} document chunks")
+        
+    def get_chunk_by_index(self, index: int) -> Optional[Dict[str, Any]]:
+        """Get a chunk by its index."""
+        if 0 <= index < len(self.chunks):
+            return self.chunks[index]
+        return None
+        
     def get_chunk_for_position(self, position: int) -> Optional[int]:
-        """Get the chunk index containing a specific position in the document."""
-        for i, metadata in enumerate(self.chunk_metadata):
-            if metadata.get("start_position", 0) <= position <= metadata.get("end_position", 0):
+        """Find which chunk contains a specific position."""
+        for i, chunk in enumerate(self.chunks):
+            start = chunk.get("start_position", 0)
+            end = chunk.get("end_position", 0)
+            if start <= position <= end:
                 return i
         return None
+        
+    # ---------- Assessment Configuration Access ----------
+    
+    def get_assessment_config(self) -> Dict[str, Any]:
+        """Get the full assessment configuration."""
+        return self.assessment_config
+        
+    def get_target_definition(self) -> Optional[Dict[str, Any]]:
+        """Get primary target definition for the assessment type."""
+        definition_map = {
+            "distill": "output_definition",
+            "extract": "entity_definition",
+            "assess": "entity_definition",
+            "analyze": "framework_definition"
+        }
+        
+        key = definition_map.get(self.assessment_type)
+        if key:
+            return self.assessment_config.get(key, {})
+        return None
+        
+    def get_workflow_instructions(self, agent_role: str) -> Optional[str]:
+        """Get instructions for a specific agent role."""
+        return self.assessment_config.get("workflow", {}).get("agent_instructions", {}).get(agent_role)
+        
+    def get_output_schema(self) -> Optional[Dict[str, Any]]:
+        """Get the output schema definition."""
+        return self.assessment_config.get("output_schema")
+        
+    def get_extraction_criteria(self) -> Optional[Dict[str, Any]]:
+        """Get the extraction criteria from the config, if present."""
+        return self.assessment_config.get("extraction_criteria")
+    
+    def get_entity_properties(self) -> Optional[Dict[str, Any]]:
+        """Helper to get entity properties if assessment type is extract/assess."""
+        if self.assessment_type in ["extract", "assess"]:
+            entity_def = self.get_target_definition()
+            return entity_def.get("properties") if isinstance(entity_def, dict) else None
+        return None
+    
+    def get_framework_dimensions(self) -> Optional[List[Dict[str, Any]]]:
+        """Helper to get framework dimensions if assessment type is analyze."""
+        if self.assessment_type == "analyze":
+            framework_def = self.get_target_definition()
+            return framework_def.get("dimensions") if isinstance(framework_def, dict) else None
+        return None
+
+    def get_rating_scale(self) -> Optional[Dict[str, Any]]:
+        """Helper to get rating scale if assessment type is analyze."""
+        if self.assessment_type == "analyze":
+            framework_def = self.get_target_definition()
+            return framework_def.get("rating_scale") if isinstance(framework_def, dict) else None
+        return None
+    
+    def get_output_format_config(self) -> Optional[Dict[str, Any]]:
+        """Get the output format configuration (presentation hints)."""
+        return self.assessment_config.get("output_format")
+        
+    # ---------- Data Storage & Retrieval ----------
+    
+    def get_data_for_agent(self, agent_role: str, data_type: str) -> Any:
+        """
+        Standardized method to get data for an agent by role and type.
+        
+        Args:
+            agent_role: The role of the agent (e.g., "extractor", "aggregator")
+            data_type: The type of data (e.g., "action_items", "issues")
+            
+        Returns:
+            The requested data or an empty list/dict
+        """
+        # Map agent roles to data categories
+        agent_to_category = {
+            "extractor": "extracted",
+            "aggregator": "aggregated", 
+            "evaluator": "evaluated",
+            "formatter": "formatted",
+            "planner": "planning"
+        }
+        
+        category = agent_to_category.get(agent_role, "")
+        
+        if category == "planning":
+            return self.data.get("planning", {})
+        elif category == "formatted":
+            return self.data.get("formatted", {})
+        elif category in ["extracted", "aggregated", "evaluated"]:
+            if data_type == "overall_assessment" and category == "evaluated":
+                return self.data.get(category, {}).get("overall_assessment", {})
+            return self.data.get(category, {}).get(data_type, [])
+        else:
+            logger.warning(f"Unknown agent role or data type: {agent_role}/{data_type}")
+            return []
+            
+    def store_agent_data(self, agent_role: str, data_type: str, data: Any) -> None:
+        """
+        Standardized method to store data from an agent.
+        
+        Args:
+            agent_role: The role of the agent (e.g., "extractor", "aggregator")
+            data_type: The type of data (e.g., "action_items", "issues") 
+            data: The data to store
+        """
+        # Map agent roles to data categories
+        agent_to_category = {
+            "extractor": "extracted",
+            "aggregator": "aggregated", 
+            "evaluator": "evaluated",
+            "formatter": "formatted",
+            "planner": "planning"
+        }
+        
+        category = agent_to_category.get(agent_role, "")
+        
+        if category == "planning":
+            self.data["planning"] = data
+            # Store in legacy location too
+            self.results["planning_output"] = data
+        elif category == "formatted":
+            self.data["formatted"] = data
+            # Store in legacy location too
+            self.results["formatting"] = data
+        elif category in ["extracted", "aggregated", "evaluated"]:
+            # Handle special case for overall assessment from evaluator
+            if category == "evaluated" and data_type == "overall_assessment":
+                self.data["evaluated"]["overall_assessment"] = data
+                # Store in legacy location too
+                self.results["overall_assessment"] = data
+            else:
+                # Ensure data_type exists in the category
+                if data_type not in self.data.get(category, {}):
+                    logger.warning(f"Unknown data type for {category}: {data_type}")
+                    # Create it anyway
+                    self.data.setdefault(category, {})[data_type] = data
+                else:
+                    self.data[category][data_type] = data
+                
+                # Store in results too for legacy support
+                legacy_key = f"{category}_{data_type}"
+                self.results[legacy_key] = data
+        else:
+            logger.warning(f"Unknown agent role or data type: {agent_role}/{data_type}")
+            
+    # ---------- Entity Management ----------
     
     def add_entity(self, entity_data: Dict[str, Any]) -> str:
         """
-        Add an entity to the entity registry.
+        Add an entity to the registry, with optional deduplication.
         
         Args:
-            entity_data: Dictionary with entity information
+            entity_data: Entity data including type, name, etc.
             
         Returns:
-            Entity ID
+            Entity ID (new or existing if merged)
         """
         entity_id = f"entity-{uuid.uuid4().hex[:8]}"
         entity_type = entity_data.get("type", "unknown")
         entity_name = entity_data.get("name", "")
-        
-        # Normalize entity name for duplicate checking
         normalized_name = entity_name.lower().strip()
         
-        # Check for existing entity with same name and type
+        # Check for existing entity (simple deduplication)
         for existing_id, existing_entity in self.entities.items():
             if (existing_entity.get("name", "").lower().strip() == normalized_name and
-                existing_entity.get("type", "") == entity_type):
-                
-                # Update existing entity
-                for key, value in entity_data.items():
-                    if key == "mentions":
-                        # Combine mentions
-                        existing_mentions = set(existing_entity.get("mentions", []))
-                        new_mentions = set(entity_data.get("mentions", []))
-                        existing_entity["mentions"] = list(existing_mentions.union(new_mentions))
-                    elif key == "source_chunks":
-                        # Combine source chunks
-                        existing_chunks = set(existing_entity.get("source_chunks", []))
-                        new_chunks = set(entity_data.get("source_chunks", []))
-                        existing_entity["source_chunks"] = list(existing_chunks.union(new_chunks))
-                    else:
-                        # Use the most detailed value
-                        if key not in existing_entity or len(str(value)) > len(str(existing_entity[key])):
-                            existing_entity[key] = value
-                
-                # Track this extraction
-                self.track_extraction("entities", 0)  # 0 because it's a duplicate
-                
-                return existing_id
+                existing_entity.get("type") == entity_type):
+                # Found a match - could implement merging logic here if needed
+                return existing_id  # Return existing ID
         
-        # If no existing entity, add new one
+        # Store the new entity
         self.entities[entity_id] = {
             "id": entity_id,
             "created_at": time.time(),
+            "stage": self.pipeline_state.get("current_stage"),
             **entity_data
         }
         
-        # Also add to extracted info
-        self.extracted_info["entities"].append(entity_id)
-        
-        # Track this extraction
-        self.track_extraction("entities", 1)
+        # Add to extracted entities list
+        self.data["extracted"]["entities"].append(entity_id)
         
         return entity_id
     
-    def add_issue(self, issue_data: Dict[str, Any]) -> str:
+    def add_relationship(self, source_id: str, relationship_type: str, target_id: str, 
+                         attributes: Optional[Dict[str, Any]] = None) -> str:
         """
-        Add an issue to the extracted information.
+        Add a relationship between two entities or items.
         
         Args:
-            issue_data: Dictionary with issue information
-            
-        Returns:
-            Issue ID
-        """
-        issue_id = f"issue-{uuid.uuid4().hex[:8]}"
-        
-        # Store with metadata
-        issue = {
-            "id": issue_id,
-            "created_at": time.time(),
-            "stage": self.metadata.get("current_stage"),
-            **issue_data
-        }
-        
-        self.extracted_info["issues"].append(issue)
-        
-        # Track this extraction
-        self.track_extraction("issues", 1)
-        
-        return issue_id
-    
-    def add_action_item(self, item_data: Dict[str, Any]) -> str:
-        """
-        Add an action item to the extracted information.
-        
-        Args:
-            item_data: Dictionary with action item information
-            
-        Returns:
-            Action item ID
-        """
-        item_id = f"action-{uuid.uuid4().hex[:8]}"
-        
-        # Store with metadata
-        action_item = {
-            "id": item_id,
-            "created_at": time.time(),
-            "stage": self.metadata.get("current_stage"),
-            **item_data
-        }
-        
-        self.extracted_info["action_items"].append(action_item)
-        
-        # Track this extraction
-        self.track_extraction("action_items", 1)
-        
-        return item_id
-    
-    def add_key_point(self, point_data: Union[str, Dict[str, Any]]) -> str:
-        """
-        Add a key point to the extracted information.
-        
-        Args:
-            point_data: String or dictionary with key point information
-            
-        Returns:
-            Key point ID
-        """
-        point_id = f"point-{uuid.uuid4().hex[:8]}"
-        
-        # Convert string to dictionary if needed
-        if isinstance(point_data, str):
-            point_data = {"text": point_data}
-        
-        # Store with metadata
-        key_point = {
-            "id": point_id,
-            "created_at": time.time(),
-            "stage": self.metadata.get("current_stage"),
-            **point_data
-        }
-        
-        self.extracted_info["key_points"].append(key_point)
-        
-        # Track this extraction
-        self.track_extraction("key_points", 1)
-        
-        return point_id
-    
-    def add_relationship(self, source_id: str, relationship_type: str, target_id: str) -> str:
-        """
-        Add a relationship between two items.
-        
-        Args:
-            source_id: ID of the source item
-            relationship_type: Type of relationship (e.g., "assigned_to", "depends_on")
-            target_id: ID of the target item
+            source_id: ID of the source entity/item
+            relationship_type: Type of relationship
+            target_id: ID of the target entity/item
+            attributes: Optional attributes for the relationship
             
         Returns:
             Relationship ID
         """
-        relationship_id = f"rel-{uuid.uuid4().hex[:8]}"
+        rel_id = f"rel-{uuid.uuid4().hex[:8]}"
         
         relationship = {
-            "id": relationship_id,
+            "id": rel_id,
             "source_id": source_id,
-            "relationship_type": relationship_type,
+            "type": relationship_type,
             "target_id": target_id,
+            "attributes": attributes or {},
             "created_at": time.time(),
-            "stage": self.metadata.get("current_stage")
+            "stage": self.pipeline_state.get("current_stage")
         }
         
         self.relationships.append(relationship)
-        return relationship_id
+        return rel_id
+        
+    # ---------- Evidence Management ----------
     
     def add_source_reference(self, text: str, source_info: Optional[Dict[str, Any]] = None) -> str:
         """
-        Add a source reference to track text back to the document.
+        Store a snippet of source text with its origin info.
         
         Args:
-            text: The text that's being referenced
-            source_info: Dictionary with source information (chunk_index, span, etc.)
+            text: The source text snippet
+            source_info: Additional info like chunk_index
             
         Returns:
             Reference ID
         """
         ref_id = f"ref-{uuid.uuid4().hex[:8]}"
+        source_info = source_info or {}
         
-        # Try to find the chunk if not provided
-        if source_info is None or "chunk_index" not in source_info:
-            source_info = source_info or {}
-            # Simple approach - find first chunk containing this text
+        # Auto-detect chunk if not provided
+        if "chunk_index" not in source_info and len(text) < 500:
             for i, chunk in enumerate(self.chunks):
                 if text in chunk.get("text", ""):
                     source_info["chunk_index"] = i
                     break
-        
-        reference = {
-            "id": ref_id,
+                    
+        # Store the reference
+        self.evidence_store["sources"][ref_id] = {
             "text": text,
-            "created_at": time.time(),
-            **source_info
+            "metadata": source_info,
+            "created_at": time.time()
         }
         
-        self.source_references[ref_id] = reference
         return ref_id
     
-    def add_evidence(self, conclusion_id: str, evidence_text: str, source_info: Optional[Dict[str, Any]] = None) -> str:
+    def add_evidence(self, item_id: str, evidence_text: str, source_info: Optional[Dict[str, Any]] = None, 
+                    confidence: Optional[float] = None) -> str:
         """
-        Add evidence supporting a conclusion.
+        Add evidence for an item.
         
         Args:
-            conclusion_id: ID of the conclusion (issue, action item, etc.)
-            evidence_text: The text providing evidence
-            source_info: Dictionary with source information
+            item_id: ID of the item this evidence supports
+            evidence_text: The evidence text snippet
+            source_info: Additional metadata (chunk_index, etc.)
+            confidence: Optional confidence score
             
         Returns:
-            Evidence ID
+            Evidence reference ID
         """
-        # First add as a source reference
+        # Create source reference
         ref_id = self.add_source_reference(evidence_text, source_info)
         
-        # Then link to the conclusion
-        if conclusion_id not in self.evidence:
-            self.evidence[conclusion_id] = []
+        # Link it to the item
+        if item_id not in self.evidence_store["references"]:
+            self.evidence_store["references"][item_id] = []
             
-        self.evidence[conclusion_id].append(ref_id)
+        # Add confidence if provided
+        evidence_entry = {"ref_id": ref_id}
+        if confidence is not None:
+            evidence_entry["confidence"] = confidence
+            
+        self.evidence_store["references"][item_id].append(evidence_entry)
+        
         return ref_id
-    
-    def add_custom_extraction(self, extraction_type: str, data: Any) -> None:
+        
+    def get_evidence_for_item(self, item_id: str) -> List[Dict[str, Any]]:
         """
-        Add custom extraction data.
+        Get all evidence for an item.
         
         Args:
-            extraction_type: Type of extraction
-            data: The extracted data
-        """
-        if extraction_type not in self.extracted_info["custom"]:
-            self.extracted_info["custom"][extraction_type] = []
-            
-        self.extracted_info["custom"][extraction_type].append(data)
-        
-        # Track this extraction
-        self.track_extraction(extraction_type, 1)
-    
-    def add_evaluation(self, evaluation_type: str, data: Dict[str, Any]) -> None:
-        """
-        Add evaluation results.
-        
-        Args:
-            evaluation_type: Type of evaluation
-            data: The evaluation data
-        """
-        self.evaluations[evaluation_type] = data
-    
-    def query_entities(self, entity_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Query entities by type.
-        
-        Args:
-            entity_type: Optional type to filter by
+            item_id: ID of the item
             
         Returns:
-            List of matching entities
+            List of evidence dictionaries with text and metadata
         """
-        if entity_type:
-            return [e for e_id, e in self.entities.items() if e.get("type") == entity_type]
-        else:
-            return list(self.entities.values())
-    
-    def query_items_by_entity(self, entity_id: str, item_type: str = "action_items") -> List[Dict[str, Any]]:
-        """
-        Query items related to a specific entity.
+        evidence_list = []
         
-        Args:
-            entity_id: Entity ID to find related items
-            item_type: Type of items to return
-            
-        Returns:
-            List of matching items
-        """
-        # Find relationships where this entity is the target
-        related_relationships = [r for r in self.relationships if r["target_id"] == entity_id]
-        source_ids = [r["source_id"] for r in related_relationships]
-        
-        # Return items of the specified type that match these source IDs
-        if item_type in self.extracted_info and isinstance(self.extracted_info[item_type], list):
-            return [item for item in self.extracted_info[item_type] if item["id"] in source_ids]
-        return []
+        for evidence_entry in self.evidence_store["references"].get(item_id, []):
+            ref_id = evidence_entry.get("ref_id")
+            if ref_id and ref_id in self.evidence_store["sources"]:
+                source_data = self.evidence_store["sources"][ref_id]
+                evidence_item = {
+                    "source_id": ref_id,
+                    "text": source_data.get("text", ""),
+                    "metadata": source_data.get("metadata", {}),
+                    "confidence": evidence_entry.get("confidence")
+                }
+                evidence_list.append(evidence_item)
+                
+        return evidence_list
     
-    def get_processing_time(self) -> float:
-        """Get total processing time so far."""
-        return time.time() - self.metadata["start_time"]
+    # ---------- Legacy Support Methods ----------
     
-    def get_metrics_summary(self) -> Dict[str, Any]:
-        """
-        Get a summary of processing metrics.
+    def add_action_item(self, item_data: Dict[str, Any]) -> str:
+        """Add an action item (compatibility method)."""
+        item_id = f"action-{uuid.uuid4().hex[:8]}"
         
-        Returns:
-            Dictionary with metrics summary
-        """
-        summary = {
-            "extraction_counts": self.metrics["extractions"],
-            "processing_time": self.get_processing_time(),
-            "stage_durations": self.metrics["processing"]["stage_durations"],
-            "tokens_used": self.metrics["processing"]["tokens_used"],
-            "agent_calls": {}
+        # Create item with metadata
+        action_item = {
+            "id": item_id,
+            "created_at": time.time(),
+            "stage": self.pipeline_state.get("current_stage"),
+            **item_data
         }
         
-        # Calculate total calls per agent
-        for agent, operations in self.metrics["processing"]["agent_calls"].items():
-            summary["agent_calls"][agent] = sum(operations.values())
+        # Store in new structure
+        if "action_items" not in self.data["extracted"]:
+            self.data["extracted"]["action_items"] = []
+            
+        self.data["extracted"]["action_items"].append(action_item)
         
-        return summary
+        # Ensure legacy extracted_info exists
+        if not hasattr(self, 'extracted_info'):
+            self.extracted_info = {"action_items": []}
+        elif "action_items" not in self.extracted_info:
+            self.extracted_info["action_items"] = []
+            
+        # Store in legacy location too
+        self.extracted_info["action_items"].append(action_item)
+        
+        return item_id
     
-    def to_dict(self, include_document: bool = False) -> Dict[str, Any]:
+    def add_issue(self, issue_data: Dict[str, Any]) -> str:
+        """Add an issue (compatibility method)."""
+        issue_id = f"issue-{uuid.uuid4().hex[:8]}"
+        
+        # Create issue with metadata
+        issue = {
+            "id": issue_id,
+            "created_at": time.time(),
+            "stage": self.pipeline_state.get("current_stage"),
+            **issue_data
+        }
+        
+        # Store in new structure
+        if "issues" not in self.data["extracted"]:
+            self.data["extracted"]["issues"] = []
+            
+        self.data["extracted"]["issues"].append(issue)
+        
+        # Ensure legacy extracted_info exists
+        if not hasattr(self, 'extracted_info'):
+            self.extracted_info = {"issues": []}
+        elif "issues" not in self.extracted_info:
+            self.extracted_info["issues"] = []
+            
+        # Store in legacy location too
+        self.extracted_info["issues"].append(issue)
+        
+        return issue_id
+    
+    def add_key_point(self, point_data: Union[str, Dict[str, Any]]) -> str:
+        """Add a key point (compatibility method)."""
+        point_id = f"point-{uuid.uuid4().hex[:8]}"
+        
+        # Convert string to dict if needed
+        if isinstance(point_data, str):
+            point_data = {"text": point_data}
+        
+        # Create point with metadata
+        key_point = {
+            "id": point_id,
+            "created_at": time.time(),
+            "stage": self.pipeline_state.get("current_stage"),
+            **point_data
+        }
+        
+        # Store in new structure
+        if "key_points" not in self.data["extracted"]:
+            self.data["extracted"]["key_points"] = []
+            
+        self.data["extracted"]["key_points"].append(key_point)
+        
+        # Ensure legacy extracted_info exists
+        if not hasattr(self, 'extracted_info'):
+            self.extracted_info = {"key_points": []}
+        elif "key_points" not in self.extracted_info:
+            self.extracted_info["key_points"] = []
+            
+        # Store in legacy location too
+        self.extracted_info["key_points"].append(key_point)
+        
+        return point_id
+
+    def _add_history(self, event_type: str, details: Dict[str, Any]) -> None:
         """
-        Serialize the processing context to a dictionary.
+        Add an event to the processing history log.
         
         Args:
-            include_document: Whether to include the full document text
-            
-        Returns:
-            Dictionary representation of the context
+            event_type: Type of event (e.g., "stage_start", "progress_update")
+            details: Additional details about the event
         """
+        if not hasattr(self, 'history'):
+            self.history = []
+            
+        event = {
+            "timestamp": time.time(),
+            "event": event_type,
+            **details
+        }
+        
+        self.history.append(event)
+        
+    # ---------- Final Result Generation ----------
+    
+    def get_final_result(self) -> Dict[str, Any]:
+        """Generate the final result dictionary."""
+        # Start with formatted output as the main result
+        final_result = {
+            "result": self.data.get("formatted", {}),
+            "metadata": {
+                "assessment_id": self.assessment_id,
+                "assessment_type": self.assessment_type,
+                "assessment_display_name": self.display_name,
+                "document_info": self.document_info,
+                "processing_time_seconds": round(time.time() - self.start_time, 2),
+                "run_id": self.run_id,
+                "stages_completed": [s for s, data in self.pipeline_state["stages"].items() 
+                                    if data.get("status") == "completed"],
+                "stages_failed": [s for s, data in self.pipeline_state["stages"].items() 
+                                 if data.get("status") == "failed"],
+                "errors": self.pipeline_state["errors"],
+                "warnings": self.pipeline_state["warnings"],
+                "options": self.options
+            },
+            "statistics": {
+                "total_tokens": self.usage_metrics["total_tokens"],
+                "stage_tokens": self.usage_metrics["stage_tokens"],
+                "total_llm_calls": self.usage_metrics["llm_calls"],
+                "stage_durations": self.usage_metrics["stage_durations"],
+                "total_chunks": len(self.chunks)
+            }
+        }
+        
+        # Include summary of extracted items if not in formatted output
+        if "extracted_info" not in final_result:
+            # Create a clean copy without internal IDs and fields
+            extracted_info = {}
+            
+            for item_type in ["action_items", "issues", "key_points"]:
+                if item_type in self.data["evaluated"]:
+                    # Prioritize evaluated items
+                    items = self.data["evaluated"][item_type]
+                elif item_type in self.data["aggregated"]:
+                    # Fall back to aggregated items
+                    items = self.data["aggregated"][item_type]
+                elif item_type in self.data["extracted"]:
+                    # Last resort: extracted items
+                    items = self.data["extracted"][item_type]
+                else:
+                    items = []
+                    
+                if items:
+                    # Clean up internal fields starting with underscore
+                    extracted_info[item_type] = [{k: v for k, v in item.items() 
+                                               if not k.startswith("_")} 
+                                             for item in items]
+            
+            if extracted_info:
+                final_result["extracted_info"] = extracted_info
+                
+        # Include agent access to intermediate results if needed
+        if self.options.get("include_intermediate_results", False):
+            final_result["intermediate_results"] = self.data
+            
+        return final_result
+        
+    # ---------- Serialization ----------
+    
+    def to_dict(self, include_document: bool = False, include_chunks: bool = False) -> Dict[str, Any]:
+        """Convert context to dictionary for serialization."""
         data = {
             "run_id": self.run_id,
+            "assessment_id": self.assessment_id,
             "assessment_type": self.assessment_type,
+            "assessment_config": self.assessment_config,
+            "options": self.options,
             "document_info": self.document_info,
-            "metadata": self.metadata,
-            "results": self.results,
-            "extracted_info": self.extracted_info,
-            "evaluations": self.evaluations,
+            "pipeline_state": self.pipeline_state,
+            "usage_metrics": self.usage_metrics,
+            "data": self.data,
+            "evidence_store": self.evidence_store,
             "entities": self.entities,
             "relationships": self.relationships,
-            "evidence": self.evidence,
-            "chunk_metadata": self.chunk_metadata,
-            "history": self.history,
-            "metrics": self.metrics
+            "chunks_count": len(self.chunks)
         }
         
         if include_document:
             data["document_text"] = self.document_text
-            data["chunks"] = self.chunks
-        
-        return data
-    
-    def to_json(self, include_document: bool = False) -> str:
-        """
-        Serialize the processing context to JSON.
-        
-        Args:
-            include_document: Whether to include the full document text
             
-        Returns:
-            JSON string
-        """
-        return json.dumps(self.to_dict(include_document), indent=2)
-    
+        if include_chunks:
+            data["chunks"] = self.chunks
+            
+        return data
+        
+    def to_json(self, include_document: bool = False, include_chunks: bool = False) -> str:
+        """Convert context to JSON string."""
+        return json.dumps(self.to_dict(include_document, include_chunks), default=str)
+        
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ProcessingContext':
-        """
-        Create a ProcessingContext from a dictionary.
+        """Create context instance from dictionary."""
+        doc_text = data.get("document_text", "")
+        assessment_config = data.get("assessment_config", {})
+        options = data.get("options", {})
         
-        Args:
-            data: Dictionary representation
-            
-        Returns:
-            ProcessingContext instance
-        """
-        # Create a minimal context
-        context = cls(
-            document_text=data.get("document_text", ""),
-            options={"assessment_type": data.get("assessment_type", "default")}
-        )
+        context = cls(doc_text, assessment_config, options)
         
-        # Restore all fields
-        context.run_id = data.get("run_id", context.run_id)
-        context.document_info = data.get("document_info", {})
-        context.metadata = data.get("metadata", {})
-        context.results = data.get("results", {})
-        context.extracted_info = data.get("extracted_info", {})
-        context.evaluations = data.get("evaluations", {})
-        context.entities = data.get("entities", {})
-        context.relationships = data.get("relationships", [])
-        context.evidence = data.get("evidence", {})
-        context.chunks = data.get("chunks", [])
-        context.chunk_metadata = data.get("chunk_metadata", [])
-        context.history = data.get("history", [])
-        context.metrics = data.get("metrics", {})
-        
-        # Rebuild chunk_mapping
-        for i, chunk in enumerate(context.chunks):
-            start_pos = chunk.get("start_position", 0)
-            end_pos = chunk.get("end_position", 0)
-            context.chunk_mapping[(start_pos, end_pos)] = i
-        
-        return context
-    
-    @classmethod
-    def from_json(cls, json_str: str) -> 'ProcessingContext':
-        """
-        Create a ProcessingContext from a JSON string.
-        
-        Args:
-            json_str: JSON string representation
-            
-        Returns:
-            ProcessingContext instance
-        """
-        data = json.loads(json_str)
-        return cls.from_dict(data)
-    
-    def get_final_result(self) -> Dict[str, Any]:
-        """Create the final result dictionary with metadata."""
-        # Get the formatted result if available
-        formatted_result = self.results.get("formatting", {})
-        
-        # Create result dictionary
-        result = {
-            "result": formatted_result,
-            "metadata": {
-                "run_id": self.run_id,
-                "assessment_type": self.assessment_type,
-                "processing_time": self.get_processing_time(),
-                "document_info": self.document_info,
-                "stages": self.metadata["stages"],
-                "errors": self.metadata["errors"],
-                "warnings": self.metadata["warnings"],
-                "options": self.options
-            },
-            "extracted_info": {
-                "issues": self._clean_ids(self.extracted_info.get("issues", [])),
-                "action_items": self._clean_ids(self.extracted_info.get("action_items", [])),
-                "key_points": self._clean_ids(self.extracted_info.get("key_points", [])),
-                "entities": [self.entities[e_id] for e_id in self.extracted_info.get("entities", []) if e_id in self.entities]
-            },
-            "statistics": self.get_metrics_summary()
+        # Restore fields
+        for field in ["run_id", "document_info", "pipeline_state", "usage_metrics", 
+                      "data", "evidence_store", "entities", "relationships"]:
+            if field in data:
+                setattr(context, field, data[field])
+                
+        # Restore chunks if available
+        if "chunks" in data:
+            context.chunks = data["chunks"]
+            # Rebuild chunk mapping
+            context.chunk_mapping = {}
+            for i, chunk in enumerate(context.chunks):
+                start_pos = chunk.get("start_position", 0)
+                end_pos = chunk.get("end_position", 0)
+                context.chunk_mapping[(start_pos, end_pos)] = i
+                
+        # Ensure metadata compatibility
+        context.metadata = {
+            "start_time": context.pipeline_state.get("start_time", context.start_time),
+            "run_id": context.run_id,
+            "current_stage": context.pipeline_state.get("current_stage"),
+            "stages": context.pipeline_state.get("stages", {}),
+            "errors": context.pipeline_state.get("errors", []),
+            "warnings": context.pipeline_state.get("warnings", []),
+            "progress": context.pipeline_state.get("progress", 0.0),
+            "progress_message": context.pipeline_state.get("progress_message", "")
         }
         
-        # Add evaluations to result
-        if self.evaluations:
-            result["evaluations"] = self.evaluations
-        
-        return result
-    
-    def _clean_ids(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Convert internal IDs to more user-friendly formats."""
-        cleaned = []
-        for item in items:
-            # Create a copy without internal fields
-            cleaned_item = {k: v for k, v in item.items() if not k.startswith("_")}
-            cleaned.append(cleaned_item)
-        return cleaned
-    
-    def set_progress_callback(self, callback: Callable[[float, str], None]) -> None:
-        """Set a callback function for progress updates."""
-        self.progress_callback = callback
-    
-    def checkpoint(self, filepath: str) -> None:
-        """
-        Save a checkpoint of the current processing state.
-        
-        Args:
-            filepath: Path to save the checkpoint
-        """
-        with open(filepath, 'w') as f:
-            f.write(self.to_json(include_document=True))
-    
-    @classmethod
-    def load_checkpoint(cls, filepath: str) -> 'ProcessingContext':
-        """
-        Load a processing context from a checkpoint.
-        
-        Args:
-            filepath: Path to the checkpoint file
+        # Restore results for legacy compatibility
+        context.results = {}
+        for stage, result in data.get("results", {}).items():
+            context.results[stage] = result
             
-        Returns:
-            ProcessingContext instance
-        """
-        with open(filepath, 'r') as f:
-            return cls.from_json(f.read())
+        return context
+        
+    @classmethod
+    def from_json(cls, json_str: str) -> 'ProcessingContext':
+        """Create context instance from JSON string."""
+        data = json.loads(json_str)
+        return cls.from_dict(data)
+        
+    # ---------- Utility Methods ----------
+    
+    def log_agent_action(self, agent_name: str, action: str, details: Optional[Dict[str, Any]] = None) -> None:
+        """Log an action taken by an agent for debugging/transparency."""
+        log_entry = {
+            "timestamp": time.time(),
+            "agent": agent_name,
+            "action": action,
+            "stage": self.pipeline_state.get("current_stage"),
+            "details": details or {}
+        }
+        
+        # Create agent_logs if it doesn't exist
+        if "agent_logs" not in self.metadata:
+            self.metadata["agent_logs"] = []
+            
+        # Log the action
+        self.metadata["agent_logs"].append(log_entry)
+        
+        # Track specific actions for metrics
+        if action in ["generate_completion", "generate_structured_output", "llm_call"]:
+            self.record_agent_call(agent_name, action)
+            
+    def get_metrics_summary(self) -> Dict[str, Any]:
+        """Get a summary of processing metrics."""
+        summary = {
+            "extraction_counts": {},
+            "processing_time_seconds": round(time.time() - self.start_time, 2),
+            "stage_durations_seconds": {k: round(v, 2) for k, v in self.usage_metrics["stage_durations"].items()},
+            "total_llm_tokens_used": self.usage_metrics["total_tokens"],
+            "total_llm_calls": self.usage_metrics["llm_calls"]
+        }
+        
+        # Count extracted items by type
+        for category, items in self.data["extracted"].items():
+            if isinstance(items, list):
+                summary["extraction_counts"][category] = len(items)
+                
+        return summary
+        
+    def checkpoint(self, filepath: Union[str, Path]) -> None:
+        """Save the current context state to a JSON file."""
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(self.to_json(include_document=True, include_chunks=True))
+            logger.info(f"ProcessingContext checkpoint saved to: {path}")
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint to {path}: {e}", exc_info=True)
+            
+    @classmethod
+    def load_checkpoint(cls, filepath: Union[str, Path]) -> 'ProcessingContext':
+        """Load context state from a JSON checkpoint file."""
+        path = Path(filepath)
+        if not path.exists():
+            raise FileNotFoundError(f"Checkpoint file not found: {path}")
+            
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                context = cls.from_json(f.read())
+            logger.info(f"ProcessingContext loaded from checkpoint: {path}")
+            return context
+        except Exception as e:
+            logger.error(f"Failed to load checkpoint from {path}: {e}", exc_info=True)
+            raise
+

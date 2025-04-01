@@ -1,297 +1,148 @@
 # core/agents/reviewer.py
-from typing import Dict, Any, List, Optional
+import logging
 import json
-import asyncio
+from typing import Dict, Any, List, Optional
 
-from core.agents.base import Agent
+# Import base class and context/LLM types
+from .base import BaseAgent
+from core.llm.customllm import CustomLLM
 from core.models.context import ProcessingContext
 
-class ReviewerAgent(Agent):
+class ReviewerAgent(BaseAgent):
     """
-    The Reviewer Agent performs quality control to ensure consistency and completeness.
+    Performs a quality control review of the formatted output produced by
+    the FormatterAgent, checking for consistency, completeness, and alignment
+    with the assessment configuration. Provides feedback but does not modify
+    the formatted output directly.
     
-    Responsibilities:
-    - Check for missing information
-    - Ensure consistency across the report
-    - Verify alignment with user needs
-    - Suggest improvements
+    Uses the enhanced ProcessingContext for standardized data storage and retrieval.
     """
-    
-    async def process(self, context: ProcessingContext) -> Dict[str, Any]:
+
+    def __init__(self, llm: CustomLLM, options: Optional[Dict[str, Any]] = None):
+        """Initialize the ReviewerAgent."""
+        super().__init__(llm, options)
+        self.role = "reviewer"
+        self.name = "ReviewerAgent"
+        self.logger = logging.getLogger(f"core.agents.{self.name}")
+        self.logger.info(f"ReviewerAgent initialized.")
+
+    async def process(self, context: ProcessingContext) -> Optional[Dict[str, Any]]:
         """
-        Review the generated report for quality and consistency.
-        
+        Reviews the Formatter's output and stores feedback in the context.
+
         Args:
-            context: The shared processing context
-            
+            context: The shared ProcessingContext object containing the formatted report.
+
         Returns:
-            Review results with suggestions
+            The dictionary containing the review results, or None if review cannot be performed.
         """
-        self.log_info(context, "Starting report review")
-        
+        self._log_info(f"Starting review phase for assessment: '{context.display_name}'", context)
+
+        # --- Get Data using the enhanced context method ---
+        formatted_output = self._get_data(context, "formatter", "formatted", None)
+        if not formatted_output or not isinstance(formatted_output, dict):
+            self._log_warning("No valid formatted output found in context. Cannot perform review.", context)
+            # Store minimal review result in context
+            error_review = {"error": "Could not perform review: No formatted output available."}
+            self._store_data(context, "review", error_review)
+            return error_review
+
         try:
-            # Get formatting results
-            formatting_results = context.results.get("formatting", {})
-            report = formatting_results.get("report", {})
-            statistics = formatting_results.get("statistics", {})
-            
-            # Get assessment config
-            assessment_config = context.assessment_config
-            report_format = assessment_config.get("report_format", {})
-            
-            # Get custom instructions from assessment config
-            agent_instructions = self.get_agent_instructions(context)
-            
-            # Review the report
-            review_results = await self._review_report(
-                context, report, statistics, assessment_config, agent_instructions
-            )
-            
-            # Apply suggestions if possible
-            if review_results.get("apply_suggestions", False):
-                updated_report = await self._apply_suggestions(
-                    context, report, review_results.get("suggestions", [])
-                )
-                review_results["updated_report"] = updated_report
-            
-            self.log_info(context, "Review complete")
-            
-            return review_results
-            
-        except Exception as e:
-            error_message = f"Review failed: {str(e)}"
-            self.log_error(context, error_message)
-            raise
-    
-    async def _review_report(self,
-                           context: ProcessingContext,
-                           report: Dict[str, Any],
-                           statistics: Dict[str, Any],
-                           assessment_config: Dict[str, Any],
-                           agent_instructions: str) -> Dict[str, Any]:
-        """
-        Review the report for quality, completeness, and consistency.
-        
-        Args:
-            context: The processing context
-            report: The generated report
-            statistics: Report statistics
-            assessment_config: Assessment configuration
-            agent_instructions: Instructions from the assessment config
-            
-        Returns:
-            Review results with suggestions
-        """
-        # Define schema for review results
-        json_schema = {
-            "type": "object",
-            "properties": {
-                "quality_score": {"type": "number"},
-                "completeness_score": {"type": "number"},
-                "consistency_score": {"type": "number"},
-                "overall_score": {"type": "number"},
-                "strengths": {
-                    "type": "array",
-                    "items": {"type": "string"}
-                },
-                "improvement_areas": {
-                    "type": "array",
-                    "items": {"type": "string"}
-                },
-                "suggestions": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "section": {"type": "string"},
-                            "issue": {"type": "string"},
-                            "suggestion": {"type": "string"},
-                            "severity": {"type": "string"}
-                        }
+            # --- Get Configuration ---
+            assessment_config = context.get_assessment_config()
+            output_schema = context.get_output_schema()
+            base_reviewer_instructions = context.get_workflow_instructions(self.role) or "Review the formatted output for quality, consistency, and adherence to the schema."
+
+            # --- Define Schema for Review Output ---
+            review_output_schema = {
+                "type": "object",
+                "properties": {
+                    "overall_quality_score": {"type": "number", "minimum": 0, "maximum": 10, "description": "Overall quality rating (0-10)."},
+                    "schema_adherence_score": {"type": "number", "minimum": 0, "maximum": 10, "description": "How well the output matches the required schema (0-10)."},
+                    "clarity_score": {"type": "number", "minimum": 0, "maximum": 10, "description": "Clarity and readability rating (0-10)."},
+                    "completeness_score": {"type": "number", "minimum": 0, "maximum": 10, "description": "Assessment of whether key information seems present based on inputs (0-10)."},
+                    "review_summary": {"type": "string", "description": "A concise summary paragraph of the review findings."},
+                    "strengths": {"type": "array", "items": {"type": "string"}, "description": "List 2-3 specific strengths of the formatted output."},
+                    "areas_for_improvement": {"type": "array", "items": {"type": "string"}, "description": "List 2-3 specific areas needing improvement."},
+                    "specific_suggestions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "location": {"type": "string", "description": "Specific key/path within the formatted output where issue occurs (e.g., 'result.summary', 'result.action_items[0].owner')."},
+                                "issue_description": {"type": "string", "description": "Description of the identified issue."},
+                                "suggestion": {"type": "string", "description": "Concrete suggestion for improvement."}
+                            },
+                            "required": ["location", "issue_description", "suggestion"]
+                        },
+                        "description": "List of specific, actionable suggestions for improvement."
                     }
                 },
-                "missing_information": {
-                    "type": "array",
-                    "items": {"type": "string"}
-                },
-                "review_summary": {"type": "string"},
-                "apply_suggestions": {"type": "boolean"}
-            },
-            "required": ["quality_score", "completeness_score", "consistency_score", "overall_score", "review_summary"]
-        }
-        
-        # Create a prompt for reviewing the report
-        prompt = f"""
-        You are an expert report reviewer for an AI document analysis system.
-        
-        Please review the following report for quality, completeness, consistency, and alignment with the assessment requirements.
-        
-        Report:
-        ```
-        {json.dumps(report, indent=2)}
-        ```
-        
-        Statistics:
-        ```
-        {json.dumps(statistics, indent=2)}
-        ```
-        
-        Assessment Configuration:
-        ```
-        {json.dumps(assessment_config, indent=2)}
-        ```
-        
-        {agent_instructions}
-        
-        Please conduct a thorough review and provide:
-        1. Quality score (0-10): Evaluate the overall quality of the report
-        2. Completeness score (0-10): Assess if all required information is included
-        3. Consistency score (0-10): Check for consistency across sections
-        4. Overall score (0-10): Overall assessment of the report
-        5. Strengths: List 2-3 strengths of the report
-        6. Improvement areas: List 2-3 areas that could be improved
-        7. Specific suggestions: For each issue, provide a section, description, suggestion, and severity
-        8. Missing information: Note any important information that's missing
-        9. Review summary: A concise summary of your review
-        10. Apply suggestions flag: Should the suggestions be automatically applied (true/false)
-        
-        Format your response as a structured JSON object.
-        """
-        
-        try:
-            # Generate review results
-            review = await self.generate_structured_output(
-                prompt=prompt,
-                json_schema=json_schema,
-                max_tokens=3000,
-                temperature=0.4
-            )
-            
-            return review
-            
-        except Exception as e:
-            # If review fails, create a basic review
-            self.log_error(context, f"Error reviewing report: {str(e)}")
-            
-            return {
-                "quality_score": 5,
-                "completeness_score": 5,
-                "consistency_score": 5,
-                "overall_score": 5,
-                "strengths": ["Report was generated successfully"],
-                "improvement_areas": ["Could not perform detailed review due to an error"],
-                "suggestions": [],
-                "missing_information": ["Could not identify missing information due to an error"],
-                "review_summary": "Review process encountered an error. Basic report is available but detailed review could not be completed.",
-                "apply_suggestions": False,
-                "error": str(e)
+                "required": ["overall_quality_score", "schema_adherence_score", "clarity_score", "completeness_score", "review_summary", "strengths", "areas_for_improvement", "specific_suggestions"]
             }
-    
-    async def _apply_suggestions(self,
-                               context: ProcessingContext,
-                               report: Dict[str, Any],
-                               suggestions: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Apply suggestions to improve the report.
-        
-        Args:
-            context: The processing context
-            report: The original report
-            suggestions: List of suggestions
-            
-        Returns:
-            Updated report
-        """
-        # If no suggestions or report is empty, return original
-        if not suggestions or not report:
-            return report
-        
-        # Define schema for updated report
-        json_schema = {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "executive_summary": {"type": "string"},
-                "sections": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "content": {"type": "string"},
-                            "issues": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "id": {"type": "string"},
-                                        "title": {"type": "string"},
-                                        "description": {"type": "string"},
-                                        "severity": {"type": "string"},
-                                        "category": {"type": "string"},
-                                        "impact": {"type": "string"},
-                                        "priority": {"type": "string"},
-                                        "recommendations": {
-                                            "type": "array",
-                                            "items": {"type": "string"}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "conclusion": {"type": "string"},
-                "appendix": {
-                    "type": "object",
-                    "properties": {
-                        "methodology": {"type": "string"},
-                        "definitions": {"type": "string"}
-                    }
-                }
-            },
-            "required": ["title", "executive_summary", "sections"]
-        }
-        
-        # Create a prompt for updating the report
-        prompt = f"""
-        You are an expert report editor for an AI document analysis system.
-        
-        Please update the following report by applying these suggested improvements:
-        
-        Original Report:
-        ```
-        {json.dumps(report, indent=2)}
-        ```
-        
-        Suggestions to Apply:
-        ```
-        {json.dumps(suggestions, indent=2)}
-        ```
-        
-        Please:
-        1. Apply all the suggested improvements
-        2. Maintain the original structure of the report
-        3. Ensure consistent formatting and style
-        4. Return the complete updated report
-        
-        Format your response as a structured JSON object matching the original report structure.
-        """
-        
-        try:
-            # Generate updated report
-            updated_report = await self.generate_structured_output(
+
+            # --- Construct Prompt for LLM Review ---
+            # Summarize the report slightly for the prompt if it's huge
+            report_preview_json = json.dumps(formatted_output, indent=2, default=str, ensure_ascii=False)
+            max_preview_len = self.options.get("review_preview_length", 6000)
+            if len(report_preview_json) > max_preview_len:
+                report_preview_json = report_preview_json[:max_preview_len] + "\n... [Report Truncated for Review Prompt] ..."
+                self._log_warning(f"Report preview truncated to {max_preview_len} chars for reviewer prompt.", context)
+
+            prompt = f"""
+You are an expert AI 'Reviewer' agent. Your task is to perform a quality control check on a JSON output generated by a previous 'Formatter' agent.
+
+**Assessment Context:**
+* **Assessment ID:** {context.assessment_id}
+* **Assessment Type:** {context.assessment_type} ({context.display_name})
+* **Document:** {context.document_info.get('filename', 'N/A')}
+
+**Expected Output Schema (What the Formatter *should* have produced):**
+```json
+{json.dumps(output_schema, indent=2)}
+```
+
+**Formatted Output to Review:**
+```json
+{report_preview_json}
+```
+
+**Base Instructions for Reviewer:** {base_reviewer_instructions}
+
+**Your Task:**
+Critically evaluate the 'Formatted Output to Review'. Assess its quality, clarity, completeness (based on common sense for the assessment type), and how well it adheres to the 'Expected Output Schema'. Provide constructive feedback.
+
+**Output Format:** Respond only with a valid JSON object matching this schema:
+```json
+{json.dumps(review_output_schema, indent=2)}
+```
+
+Focus on providing actionable suggestions if improvements are needed.
+Be objective in your scoring.
+"""
+
+            # --- LLM Call to Perform Review ---
+            review_result = await self._generate_structured(
                 prompt=prompt,
-                json_schema=json_schema,
-                max_tokens=4000,
-                temperature=0.3
+                output_schema=review_output_schema,
+                context=context,
+                temperature=self.options.get("reviewer_temperature", 0.3),
+                max_tokens=self.options.get("reviewer_max_tokens", 2000)
             )
-            
-            self.log_info(context, f"Applied {len(suggestions)} suggestions to improve the report")
-            
-            return updated_report
-            
+
+            # --- Store review results using the enhanced context method ---
+            self._store_data(context, "review", review_result)
+            self._log_info(f"Review complete. Overall Score: {review_result.get('overall_quality_score', 'N/A')}/10", context)
+
+            return review_result
+
         except Exception as e:
-            # If update fails, return original report
-            self.log_error(context, f"Error applying suggestions: {str(e)}")
-            return report
+            self._log_error(f"Review phase failed: {str(e)}", context, exc_info=True)
+            # Store error info in context
+            error_review = {
+                "error": f"Review Agent Failed: {str(e)}",
+                "message": "Could not generate review feedback for the formatted output."
+            }
+            self._store_data(context, "review", error_review)
+            # Re-raise the exception to fail the stage
+            raise

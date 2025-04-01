@@ -3,1199 +3,584 @@ import os
 import json
 import logging
 import shutil
+import copy
 from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
+from datetime import datetime
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class AssessmentLoader:
     """
-    Enhanced loader for assessment configurations.
-    
-    Manages loading, validation, and creation of assessment definitions,
-    providing access to assessment types and their configurations.
+    Loads and manages assessment configurations (base types and user templates)
+    based on a unified JSON structure where 'assessment_id' is the key identifier.
     """
-    
-    def __init__(self, assessment_dir: Optional[str] = None):
+
+    def __init__(self, base_dir: Optional[str] = None):
         """
         Initialize the assessment loader.
-        
+
         Args:
-            assessment_dir: Custom directory for assessment configurations
+            base_dir: Base directory containing 'types' and 'templates' folders.
+                      Defaults to the 'assessments' directory relative to this file's location.
         """
-        self.assessment_dir = assessment_dir or str(Path(__file__).parent)
-        self.assessment_path = Path(self.assessment_dir)
-        
-        # Dictionary of loaded assessments
-        self.assessments = {}
-        
-        # Dictionary of assessment schemas
-        self.schemas = {}
-        
-        # Define standard assessment types
-        self.standard_types = ["issues", "action_items", "insights"]
-        
-        # Load built-in assessments
-        self._load_builtin_assessments()
-    
-    def _load_builtin_assessments(self) -> None:
-        """Load built-in assessment configurations."""
-        # Create assessments directory if it doesn't exist
-        self.assessment_path.mkdir(exist_ok=True)
-        
-        # Load standard assessment types
-        for assessment_type in self.standard_types:
-            assessment_type_dir = self.assessment_path / assessment_type
-            
-            # Skip if directory doesn't exist
-            if not assessment_type_dir.exists():
-                logger.warning(f"Directory for {assessment_type} assessment not found")
-                continue
-                
-            config_path = assessment_type_dir / "config.json"
-            
-            # Skip if config doesn't exist
-            if not config_path.exists():
-                logger.warning(f"Configuration file for {assessment_type} assessment not found")
-                continue
-            
+        self.script_dir = Path(__file__).parent
+        self.base_dir = Path(base_dir) if base_dir else self.script_dir
+        self.types_path = self.base_dir / "types"
+        self.templates_path = self.base_dir / "templates"
+        logger.info(f"AssessmentLoader using base directory: {self.base_dir}")
+        logger.info(f"Looking for types in: {self.types_path}")
+        logger.info(f"Looking for templates in: {self.templates_path}")
+
+        self._ensure_directories()
+
+        # Cache for loaded configurations: keys are like "type:{assessment_id}" or "template:{assessment_id}"
+        self.configs: Dict[str, Dict[str, Any]] = {}
+
+        self.standard_types = {
+            "distill": "Document Summarization",
+            "extract": "Action Item Extraction",
+            "assess": "Issue Assessment",
+            "analyze": "Framework Analysis"
+        }
+
+        self.reload()
+
+    def _ensure_directories(self) -> None:
+        """Ensure all required directories exist."""
+        try:
+            self.types_path.mkdir(parents=True, exist_ok=True)
+            self.templates_path.mkdir(parents=True, exist_ok=True)
+            gitkeep_path = self.templates_path / ".gitkeep"
+            if not any(f for f in self.templates_path.iterdir() if f.name != '.gitkeep') and not gitkeep_path.exists():
+                 gitkeep_path.touch()
+            logger.debug(f"Directories verified: {self.types_path}, {self.templates_path}")
+        except OSError as e:
+            logger.error(f"OS Error ensuring directories: {e}", exc_info=True)
+        except Exception as e:
+             logger.error(f"An unexpected error occurred during directory setup: {e}", exc_info=True)
+
+    def _load_configs_from_dir(self, config_dir: Path, is_template: bool) -> None:
+        """Helper to load configs from a specific directory (types or templates)."""
+        if not config_dir.exists():
+            logger.warning(f"{'Templates' if is_template else 'Types'} directory not found: {config_dir}")
+            return
+
+        glob_pattern = "*/config.json" if is_template else "*.json"
+        prefix = "template" if is_template else "type"
+
+        logger.info(f"Scanning {config_dir} for pattern '{glob_pattern}'")
+        found_files = list(config_dir.glob(glob_pattern))
+        if not found_files:
+             logger.info(f"No configuration files found in {config_dir} matching '{glob_pattern}'")
+             return
+        logger.info(f"Found {len(found_files)} potential configuration files in {config_dir}.")
+
+        for file_path in found_files:
             try:
-                # Load the configuration
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                
-                # Validate and register the assessment
-                if self._validate_assessment_config(config):
-                    self.assessments[assessment_type] = config
-                    logger.info(f"Loaded {assessment_type} assessment configuration")
+                logger.debug(f"Attempting to load config from: {file_path}")
+                config = self._load_json_file(file_path)
+                if not config:
+                    logger.warning(f"Could not load or empty config file: {file_path}")
+                    continue
+
+                assessment_id = config.get("assessment_id")
+                if not assessment_id:
+                    logger.error(f"Missing 'assessment_id' key in config file: {file_path}. Skipping.")
+                    continue
+
+                if self._validate_config(config, assessment_id, is_template, file_path):
+                    config.setdefault("metadata", {})
+                    config["metadata"]["is_template"] = is_template
+                    config["metadata"]["loaded_from"] = str(file_path.relative_to(self.base_dir))
+
+                    if is_template and "base_assessment_id" not in config["metadata"]:
+                        base_type = config.get("assessment_type")
+                        # Simple inference, assuming base IDs follow a pattern. Explicit is better.
+                        inferred_base_id = f"base_{base_type}_v1"
+                        config["metadata"]["base_assessment_id"] = inferred_base_id
+                        logger.warning(f"Template '{assessment_id}' missing 'base_assessment_id' in metadata. Inferred as '{inferred_base_id}'. Please set explicitly.")
+
+                    cache_key = f"{prefix}:{assessment_id}"
+                    self.configs[cache_key] = config
+                    logger.info(f"Successfully loaded {'template' if is_template else 'base type'}: '{assessment_id}'")
                 else:
-                    logger.error(f"Invalid configuration for {assessment_type} assessment")
-            
+                    logger.warning(f"Invalid configuration for '{assessment_id}' in file: {file_path}. Skipping.")
+
             except Exception as e:
-                logger.error(f"Error loading {assessment_type} assessment: {str(e)}")
-    
-    def _validate_assessment_config(self, config: Dict[str, Any]) -> bool:
-        """
-        Validate an assessment configuration.
-        
-        Args:
-            config: Assessment configuration to validate
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        # Required top-level keys
-        required_keys = ["crew_type", "description", "workflow"]
-        
-        # Check required keys
+                logger.error(f"Error processing config file {file_path}: {str(e)}", exc_info=True)
+
+    def _load_json_file(self, file_path: Path) -> Optional[Dict[str, Any]]:
+        """Load and parse a JSON file."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in file: {file_path}. Error: {e}")
+            return None
+        except FileNotFoundError:
+             logger.error(f"File not found: {file_path}")
+             return None
+        except Exception as e:
+            logger.error(f"Error reading file {file_path}: {str(e)}", exc_info=True)
+            return None
+
+    def _validate_config(self, config: Dict[str, Any], assessment_id: str, is_template: bool, file_path: Path) -> bool:
+        """Validate assessment configuration against the unified structure."""
+        is_valid = True
+        required_keys = ["assessment_id", "assessment_type", "version", "display_name", "description", "workflow", "output_schema", "metadata"]
         for key in required_keys:
             if key not in config:
-                logger.error(f"Assessment configuration missing required key: {key}")
-                return False
-        
-        # Validate workflow section
-        workflow = config.get("workflow", {})
-        if not isinstance(workflow, dict):
-            logger.error("Workflow must be a dictionary")
-            return False
-        
-        if "enabled_stages" not in workflow:
-            logger.error("Workflow missing enabled_stages")
-            return False
-        
-        if "agent_roles" not in workflow:
-            logger.error("Workflow missing agent_roles")
-            return False
-        
-        # Validate agent roles - at minimum we need these
-        required_agents = ["planner", "extractor", "aggregator"]
-        for agent in required_agents:
-            if agent not in workflow.get("agent_roles", {}):
-                logger.error(f"Assessment missing required agent role: {agent}")
-                return False
-        
-        return True
-    
-    def load_assessment(self, assessment_type: str) -> Optional[Dict[str, Any]]:
-        """
-        Load an assessment configuration by type.
-        
-        Args:
-            assessment_type: Type of assessment to load
-            
-        Returns:
-            Assessment configuration or None if not found
-        """
-        # Check if already loaded
-        if assessment_type in self.assessments:
-            return self.assessments[assessment_type]
-        
-        # Try to load from file
-        config_path = self.assessment_path / assessment_type / "config.json"
-        
-        if not config_path.exists():
-            logger.error(f"No configuration file found for {assessment_type} assessment")
-            return None
-        
-        try:
-            # Load the configuration
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            
-            # Validate and register the assessment
-            if self._validate_assessment_config(config):
-                self.assessments[assessment_type] = config
-                logger.info(f"Loaded {assessment_type} assessment configuration")
-                return config
-            else:
-                logger.error(f"Invalid configuration for {assessment_type} assessment")
-                return None
-        
-        except Exception as e:
-            logger.error(f"Error loading {assessment_type} assessment: {str(e)}")
-            return None
-    
-    def get_assessment_types(self) -> List[str]:
-        """
-        Get a list of available assessment types.
-        
-        Returns:
-            List of assessment type names
-        """
-        # Return loaded assessments
-        loaded_types = list(self.assessments.keys())
-        
-        # Scan directory for additional types
-        if self.assessment_path.exists():
-            for item in self.assessment_path.iterdir():
-                if item.is_dir():
-                    config_path = item / "config.json"
-                    if config_path.exists() and item.name not in loaded_types:
-                        loaded_types.append(item.name)
-        
-        return loaded_types
-    
-    def create_assessment(self, assessment_type: str, config: Dict[str, Any]) -> bool:
-        """
-        Create a new assessment configuration.
-        
-        Args:
-            assessment_type: Type name for the new assessment
-            config: Assessment configuration
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        # Validate configuration
-        if not self._validate_assessment_config(config):
-            logger.error("Invalid assessment configuration")
-            return False
-        
-        # Create directory if it doesn't exist
-        assessment_dir = self.assessment_path / assessment_type
-        assessment_dir.mkdir(exist_ok=True)
-        
-        # Write configuration file
-        config_path = assessment_dir / "config.json"
-        try:
-            with open(config_path, 'w') as f:
-                json.dump(config, f, indent=2)
-            
-            # Add to loaded assessments
-            self.assessments[assessment_type] = config
-            logger.info(f"Created {assessment_type} assessment configuration")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error creating {assessment_type} assessment: {str(e)}")
-            return False
-    
-    def get_agent_instructions(self, assessment_type: str, agent_role: str) -> Optional[Dict[str, Any]]:
-        """
-        Get instructions for a specific agent in an assessment.
-        
-        Args:
-            assessment_type: Type of assessment
-            agent_role: Role of the agent (planner, extractor, etc.)
-            
-        Returns:
-            Agent instructions or None if not found
-        """
-        # Load assessment if not already loaded
-        assessment = self.load_assessment(assessment_type)
-        if not assessment:
-            return None
-        
-        # Get agent roles from workflow
-        workflow = assessment.get("workflow", {})
-        agent_roles = workflow.get("agent_roles", {})
-        
-        # Return instructions for the requested role
-        if agent_role in agent_roles:
-            return agent_roles[agent_role]
-        else:
-            logger.warning(f"Agent role {agent_role} not found in {assessment_type} assessment")
-            return None
-    
-    def get_assessment_schema(self, assessment_type: str) -> Optional[Dict[str, Any]]:
-        """
-        Get the output schema for an assessment type.
-        
-        Args:
-            assessment_type: Type of assessment
-            
-        Returns:
-            Schema dictionary or None if not found
-        """
-        # Check if schema is already loaded
-        if assessment_type in self.schemas:
-            return self.schemas[assessment_type]
-        
-        # Look for schema file
-        schema_path = self.assessment_path / assessment_type / "schema.json"
-        
-        if not schema_path.exists():
-            logger.warning(f"No schema found for {assessment_type} assessment")
-            return None
-        
-        try:
-            # Load the schema
-            with open(schema_path, 'r') as f:
-                schema = json.load(f)
-            
-            # Cache and return
-            self.schemas[assessment_type] = schema
-            return schema
-            
-        except Exception as e:
-            logger.error(f"Error loading schema for {assessment_type} assessment: {str(e)}")
-            return None
-    
-    def update_assessment(self, assessment_type: str, config: Dict[str, Any]) -> bool:
-            """
-            Update an existing assessment configuration.
-            
-            Args:
-                assessment_type: Assessment type to update
-                config: New assessment configuration
-                
-            Returns:
-                True if successful, False otherwise
-            """
-            # Validate configuration
-            if not self._validate_assessment_config(config):
-                logger.error("Invalid assessment configuration")
-                return False
-            
-            # Check if assessment exists
-            assessment_dir = self.assessment_path / assessment_type
-            if not assessment_dir.exists():
-                logger.error(f"Assessment type {assessment_type} does not exist")
-                return False
-            
-            # Write configuration file
-            config_path = assessment_dir / "config.json"
-            try:
-                with open(config_path, 'w') as f:
-                    json.dump(config, f, indent=2)
-                
-                # Update loaded assessments
-                self.assessments[assessment_type] = config
-                logger.info(f"Updated {assessment_type} assessment configuration")
-                return True
-                
-            except Exception as e:
-                logger.error(f"Error updating {assessment_type} assessment: {str(e)}")
-                return False
-        
-    def delete_assessment(self, assessment_type: str) -> bool:
-        """
-        Delete an assessment configuration.
-        
-        Args:
-            assessment_type: Assessment type to delete
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        # Don't allow deletion of standard types
+                logger.error(f"Config '{assessment_id}' ({file_path.name}): Missing required key: '{key}'")
+                is_valid = False
+
+        expected_id_from_path = file_path.stem if not is_template else file_path.parent.name
+        if config.get("assessment_id") != expected_id_from_path:
+             logger.warning(f"Config '{assessment_id}' ({file_path.name}): Internal 'assessment_id' ('{config.get('assessment_id')}') does not match filename/directory name ('{expected_id_from_path}'). Convention mismatch.")
+
+        assessment_type = config.get("assessment_type")
+        if not assessment_type or assessment_type not in self.standard_types:
+             logger.error(f"Config '{assessment_id}' ({file_path.name}): Invalid or missing 'assessment_type': '{assessment_type}'")
+             is_valid = False
+
+        definition_keys = ["output_definition", "entity_definition", "framework_definition"]
+        present_definitions = [key for key in definition_keys if isinstance(config.get(key), dict) and config.get(key)]
+
+        expected_definition_key = {
+            "distill": "output_definition",
+            "extract": "entity_definition",
+            "assess": "entity_definition",
+            "analyze": "framework_definition"
+        }.get(assessment_type)
+
         if assessment_type in self.standard_types:
-            logger.error(f"Cannot delete standard assessment type: {assessment_type}")
-            return False
-        
-        # Check if assessment exists
-        assessment_dir = self.assessment_path / assessment_type
-        if not assessment_dir.exists():
-            logger.error(f"Assessment type {assessment_type} does not exist")
-            return False
-        
+            if not expected_definition_key:
+                logger.error(f"Config '{assessment_id}' ({file_path.name}): Internal error - No definition key mapping for valid assessment_type: '{assessment_type}'")
+                is_valid = False
+            elif expected_definition_key not in present_definitions:
+                logger.error(f"Config '{assessment_id}' ({file_path.name}): Missing or empty expected definition block '{expected_definition_key}' for type '{assessment_type}'. Found: {present_definitions}")
+                is_valid = False
+            elif len(present_definitions) > 1:
+                logger.warning(f"Config '{assessment_id}' ({file_path.name}): Multiple definition blocks found ({present_definitions}). Only '{expected_definition_key}' should be populated for type '{assessment_type}'.")
+
+        if is_template:
+            metadata = config.get("metadata")
+            if not isinstance(metadata, dict):
+                 logger.error(f"Config '{assessment_id}' ({file_path.name}): Template is missing 'metadata' dictionary.")
+                 is_valid = False
+            elif not metadata.get("is_template"):
+                 logger.error(f"Config '{assessment_id}' ({file_path.name}): Template loaded from template directory but metadata.is_template is not true.")
+                 is_valid = False
+
+        return is_valid
+
+    def _log_loader_status(self) -> None:
+        """Log the status of loaded configurations."""
+        if not self.configs:
+            logger.info("AssessmentLoader: No configurations loaded.")
+            return
+
+        base_type_ids = sorted([cfg["assessment_id"] for cfg in self.configs.values() if cfg.get("assessment_id") and not cfg.get("metadata", {}).get("is_template")])
+        template_ids = sorted([cfg["assessment_id"] for cfg in self.configs.values() if cfg.get("assessment_id") and cfg.get("metadata", {}).get("is_template")])
+
+        logger.info(f"AssessmentLoader reload complete. {len(self.configs)} configurations loaded.")
+        logger.info(f" Base types ({len(base_type_ids)}): {', '.join(base_type_ids) or 'None'}")
+        logger.info(f" Templates ({len(template_ids)}): {', '.join(template_ids) or 'None'}")
+
+    def get_base_types(self) -> Dict[str, Dict[str, str]]:
+        """Get available base assessment types (those where metadata.is_template is false)."""
+        base_types_info = {}
+        for config in self.configs.values():
+            if not config.get("metadata", {}).get("is_template", False):
+                assessment_id = config.get("assessment_id")
+                if assessment_id:
+                    base_types_info[assessment_id] = {
+                        "display_name": config.get("display_name", assessment_id),
+                        "description": config.get("description", "")
+                    }
+        if not base_types_info:
+            logger.warning("No base types found in cache. UI might show fallback or be empty.")
+            # Keep fallback logic minimal or remove if create_default_types is reliable
+        return base_types_info
+
+    def get_templates(self) -> Dict[str, Dict[str, Any]]:
+        """Get available templates (those where metadata.is_template is true)."""
+        templates_info = {}
+        for config in self.configs.values():
+             metadata = config.get("metadata", {})
+             if metadata.get("is_template", False):
+                  assessment_id = config.get("assessment_id")
+                  if assessment_id:
+                       templates_info[assessment_id] = {
+                            "display_name": config.get("display_name", assessment_id),
+                            "description": config.get("description", ""),
+                            "base_assessment_id": metadata.get("base_assessment_id", "Unknown"),
+                            "created_date": metadata.get("created_date", "Unknown"),
+                            "last_modified_date": metadata.get("last_modified_date", "Unknown")
+                       }
+        return templates_info
+
+    def get_assessment_ids(self, include_types: bool = True, include_templates: bool = True) -> List[str]:
+        """Get a sorted list of all available assessment IDs based on filters."""
+        ids = []
+        for config in self.configs.values():
+             metadata = config.get("metadata", {})
+             is_template = metadata.get("is_template", False)
+             assessment_id = config.get("assessment_id")
+             if assessment_id:
+                  if include_types and not is_template:
+                       ids.append(assessment_id)
+                  elif include_templates and is_template:
+                       ids.append(assessment_id)
+        return sorted(ids)
+
+    def get_assessment_configs_list(self) -> List[Dict[str, Any]]:
+        """Get all assessment configurations (base and templates) as a list of dicts, suitable for UI."""
+        configs_list = []
+        for config in self.configs.values():
+             assessment_id = config.get("assessment_id")
+             if assessment_id:
+                 metadata = config.get("metadata", {})
+                 is_template = metadata.get("is_template", False)
+                 configs_list.append({
+                     "id": assessment_id,
+                     "display_name": config.get("display_name", assessment_id),
+                     "description": config.get("description", ""),
+                     "is_template": is_template,
+                     "assessment_type": config.get("assessment_type", "unknown"),
+                     "base_assessment_id": metadata.get("base_assessment_id") if is_template else None,
+                     "version": config.get("version", "unknown")
+                 })
+        configs_list.sort(key=lambda x: (x["is_template"], x["display_name"]))
+        return configs_list
+
+    def load_config(self, assessment_id: str) -> Optional[Dict[str, Any]]:
+        """Load a specific assessment configuration by its assessment_id."""
+        type_key = f"type:{assessment_id}"
+        template_key = f"template:{assessment_id}"
+
+        if type_key in self.configs:
+            logger.debug(f"Cache hit for '{assessment_id}' (as type).")
+            return copy.deepcopy(self.configs[type_key])
+        elif template_key in self.configs:
+            logger.debug(f"Cache hit for '{assessment_id}' (as template).")
+            return copy.deepcopy(self.configs[template_key])
+
+        logger.warning(f"Config '{assessment_id}' not found in cache. Attempting direct file load.")
+        loaded_config = None
         try:
-            # Remove directory and all contents
-            shutil.rmtree(assessment_dir)
-            
-            # Remove from loaded assessments
-            if assessment_type in self.assessments:
-                del self.assessments[assessment_type]
-            
-            if assessment_type in self.schemas:
-                del self.schemas[assessment_type]
-            
-            logger.info(f"Deleted {assessment_type} assessment configuration")
-            return True
-            
+            type_file_path = self.types_path / f"{assessment_id}.json"
+            if type_file_path.exists():
+                 logger.debug(f"Attempting direct load from type file: {type_file_path}")
+                 config = self._load_json_file(type_file_path)
+                 if config and config.get("assessment_id") == assessment_id and self._validate_config(config, assessment_id, is_template=False, file_path=type_file_path):
+                      cache_key = f"type:{assessment_id}"
+                      self.configs[cache_key] = config
+                      logger.info(f"Loaded base type '{assessment_id}' directly from file and cached.")
+                      loaded_config = copy.deepcopy(config)
+
+            if not loaded_config:
+                template_file_path = self.templates_path / assessment_id / "config.json"
+                if template_file_path.exists():
+                     logger.debug(f"Attempting direct load from template file: {template_file_path}")
+                     config = self._load_json_file(template_file_path)
+                     if config and config.get("assessment_id") == assessment_id and self._validate_config(config, assessment_id, is_template=True, file_path=template_file_path):
+                          cache_key = f"template:{assessment_id}"
+                          self.configs[cache_key] = config
+                          logger.info(f"Loaded template '{assessment_id}' directly from file and cached.")
+                          loaded_config = copy.deepcopy(config)
+
         except Exception as e:
-            logger.error(f"Error deleting {assessment_type} assessment: {str(e)}")
+            logger.error(f"Error during direct load attempt for '{assessment_id}': {str(e)}", exc_info=True)
+
+        if not loaded_config:
+             logger.error(f"Configuration could not be found or loaded for assessment_id: '{assessment_id}'")
+             return None
+
+        return loaded_config
+
+    def create_template_from_base(self, base_assessment_id: str, new_template_id: str,
+                                  display_name: Optional[str] = None,
+                                  description: Optional[str] = None) -> Optional[str]:
+        """Create a new template configuration file based on a base assessment ID."""
+        base_config = self.load_config(base_assessment_id)
+        if not base_config:
+            logger.error(f"Could not load base configuration to create template from: '{base_assessment_id}'")
+            return None
+
+        if base_config.get("metadata", {}).get("is_template", False):
+             logger.error(f"Cannot create template from another template: '{base_assessment_id}' is already a template.")
+             return None
+
+        if not new_template_id or "/" in new_template_id or "\\" in new_template_id or "." in new_template_id:
+             logger.error(f"Invalid new_template_id: '{new_template_id}'. Cannot contain slashes or dots.")
+             return None
+
+        template_dir = self.templates_path / new_template_id
+        if template_dir.exists():
+            logger.error(f"Template directory already exists for ID: '{new_template_id}' at {template_dir}")
+            return None
+
+        try:
+            template_dir.mkdir(parents=True)
+            logger.info(f"Created template directory: {template_dir}")
+            template_config = copy.deepcopy(base_config)
+
+            template_config["assessment_id"] = new_template_id
+            template_config["display_name"] = display_name or new_template_id
+            if description is not None:
+                template_config["description"] = description
+            template_config["version"] = "1.0"
+
+            template_config.setdefault("metadata", {})
+            template_config["metadata"]["is_template"] = True
+            template_config["metadata"]["base_assessment_id"] = base_assessment_id
+            now_iso = datetime.now(datetime.timezone.utc).isoformat() # Use timezone-aware UTC
+            template_config["metadata"]["created_date"] = now_iso
+            template_config["metadata"]["last_modified_date"] = now_iso
+            template_config["metadata"]["created_by"] = "User"
+
+            config_path = template_dir / "config.json"
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(template_config, f, indent=2)
+            logger.info(f"Saved new template config to: {config_path}")
+
+            cache_key = f"template:{new_template_id}"
+            self.configs[cache_key] = template_config
+            logger.info(f"Added new template '{new_template_id}' to cache.")
+
+            return new_template_id
+
+        except OSError as e:
+             logger.error(f"OS Error creating template '{new_template_id}' directory or file: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Unexpected error creating template '{new_template_id}': {str(e)}", exc_info=True)
+            if template_dir.exists():
+                try:
+                    shutil.rmtree(template_dir)
+                    logger.info(f"Cleaned up failed template directory: {template_dir}")
+                except Exception as cleanup_e:
+                     logger.error(f"Error during cleanup of failed template directory {template_dir}: {cleanup_e}")
+            return None
+
+    def update_template(self, template_id: str, config_updates: Dict[str, Any]) -> bool:
+        """Update an existing template configuration file using its assessment_id."""
+        current_config = self.load_config(template_id)
+        if not current_config:
+            logger.error(f"Template not found for update: '{template_id}'")
             return False
-    
-    def create_assessment_directories(self) -> None:
-        """Create directories for standard assessment types with sample configurations."""
-        for assessment_type in self.standard_types:
-            assessment_dir = self.assessment_path / assessment_type
-            
-            # Skip if already exists
-            if assessment_dir.exists():
-                continue
-            
-            # Create directory
-            assessment_dir.mkdir(exist_ok=True)
-            logger.info(f"Created directory for {assessment_type} assessment")
-            
-            # Determine which template to use
-            if assessment_type == "issues":
-                config = self._get_issues_template()
-                schema = self._get_issues_schema()
-            elif assessment_type == "action_items":
-                config = self._get_action_items_template()
-                schema = self._get_action_items_schema()
-            elif assessment_type == "insights":
-                config = self._get_insights_template()
-                schema = self._get_insights_schema()
+
+        if not current_config.get("metadata", {}).get("is_template", False):
+            logger.error(f"Attempted to update a non-template config as a template: '{template_id}'")
+            return False
+
+        try:
+            config_updates.pop("assessment_id", None)
+            config_updates.pop("assessment_type", None)
+            if "metadata" in config_updates and isinstance(config_updates["metadata"], dict):
+                config_updates["metadata"].pop("is_template", None)
+                config_updates["metadata"].pop("base_assessment_id", None)
+                config_updates["metadata"].pop("created_date", None)
+                config_updates["metadata"].pop("created_by", None)
+                if not config_updates["metadata"]:
+                     config_updates.pop("metadata")
+
+            updated_config = copy.deepcopy(current_config)
+            self._deep_update(updated_config, config_updates)
+
+            updated_config.setdefault("metadata", {})
+            updated_config["metadata"]["last_modified_date"] = datetime.now(datetime.timezone.utc).isoformat() # Use timezone-aware UTC
+
+            config_path = self.templates_path / template_id / "config.json"
+            if not config_path.parent.exists():
+                 logger.error(f"Template directory '{config_path.parent}' not found for saving update. Cannot update.")
+                 return False
+
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(updated_config, f, indent=2)
+            logger.info(f"Successfully updated template config file: {config_path}")
+
+            cache_key = f"template:{template_id}"
+            self.configs[cache_key] = updated_config
+            logger.info(f"Updated template '{template_id}' in cache.")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error updating template '{template_id}': {str(e)}", exc_info=True)
+            return False
+
+    def delete_template(self, template_id: str) -> bool:
+        """Delete a template configuration directory and remove from cache using its assessment_id."""
+        template_dir = self.templates_path / template_id
+        cache_key = f"template:{template_id}"
+        deleted = False
+
+        if cache_key in self.configs:
+            del self.configs[cache_key]
+            logger.info(f"Removed template '{template_id}' from cache.")
+            deleted = True
+
+        if template_dir.exists():
+            try:
+                shutil.rmtree(template_dir)
+                logger.info(f"Deleted template directory: {template_dir}")
+                deleted = True
+            except OSError as e:
+                logger.error(f"OS Error deleting template directory {template_dir}: {e}", exc_info=True)
+                return False
+            except Exception as e:
+                logger.error(f"Unexpected error deleting template directory {template_dir}: {str(e)}", exc_info=True)
+                return False
+        else:
+            if deleted:
+                 logger.warning(f"Template directory not found for deletion: {template_dir}, but cache entry was removed.")
             else:
-                # Generic template
-                config = self._get_generic_template(assessment_type)
-                schema = self._get_generic_schema()
-            
-            # Write config file
-            config_path = assessment_dir / "config.json"
-            with open(config_path, 'w') as f:
-                json.dump(config, f, indent=2)
-            
-            # Write schema file
-            schema_path = assessment_dir / "schema.json"
-            with open(schema_path, 'w') as f:
-                json.dump(schema, f, indent=2)
-            
-            logger.info(f"Created configuration files for {assessment_type} assessment")
-    
-    def get_user_options(self, assessment_type: str) -> Dict[str, Any]:
-        """
-        Get user-configurable options for an assessment type.
-        
-        Args:
-            assessment_type: Assessment type
-            
-        Returns:
-            Dictionary of user options
-        """
-        assessment = self.load_assessment(assessment_type)
-        if not assessment:
-            return {}
-        
-        return assessment.get("user_options", {})
-    
-    def _get_generic_template(self, assessment_type: str) -> Dict[str, Any]:
-        """Create a generic assessment template."""
-        return {
-            "crew_type": assessment_type,
-            "description": f"Generic {assessment_type} assessment",
-            
-            "workflow": {
-                "enabled_stages": ["document_analysis", "chunking", "planning", "extraction", "aggregation", "evaluation", "formatting", "review"],
-                "agent_roles": {
-                    "planner": {
-                        "description": "Plans the analysis approach",
-                        "primary_task": "Create tailored instructions",
-                        "instructions": "Study the document to identify its structure and purpose. Create extraction instructions."
-                    },
-                    "extractor": {
-                        "description": "Extracts relevant information",
-                        "primary_task": "Find relevant information in chunks",
-                        "instructions": "Extract relevant information from each document chunk."
-                    },
-                    "aggregator": {
-                        "description": "Combines extracted information",
-                        "primary_task": "Consolidate findings",
-                        "instructions": "Combine findings from different chunks and remove duplicates."
-                    }
-                },
-                "stage_weights": {
-                    "document_analysis": 0.1,
-                    "chunking": 0.1,
-                    "planning": 0.1,
-                    "extraction": 0.3,
-                    "aggregation": 0.2,
-                    "evaluation": 0.1,
-                    "formatting": 0.1
-                }
-            }
-        }
-    
-    def _get_generic_schema(self) -> Dict[str, Any]:
-        """Create a generic schema template."""
-        return {
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": "Summary of findings"
-                },
-                "findings": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "description": {"type": "string"},
-                            "category": {"type": "string"},
-                            "importance": {"type": "string"}
-                        }
-                    }
-                },
-                "metadata": {
-                    "type": "object"
-                }
-            }
-        }
-    
-    def _get_issues_template(self) -> Dict[str, Any]:
-        """Get the template for issues assessment."""
-        return {
-            "crew_type": "issues",
-            "description": "Identifies problems, challenges, risks, and concerns in documents",
-            
-            "issue_definition": {
-                "description": "Any problem, challenge, risk, or concern that may impact objectives, efficiency, or quality",
-                "severity_levels": {
-                    "critical": "Immediate threat requiring urgent attention",
-                    "high": "Significant impact requiring prompt attention",
-                    "medium": "Moderate impact that should be addressed",
-                    "low": "Minor impact with limited consequences"
-                },
-                "categories": [
-                    "technical", "process", "resource", "quality", "risk", "compliance"
-                ]
-            },
-            
-            "workflow": {
-                "enabled_stages": ["document_analysis", "chunking", "planning", "extraction", "aggregation", "evaluation", "formatting", "review"],
-                "agent_roles": {
-                    "planner": {
-                        "description": "Plans the analysis approach and creates instructions for other agents",
-                        "primary_task": "Create tailored instructions for each stage based on document type and user preferences",
-                        "instructions": "Study the beginning of the document to identify its type and purpose. Then create specific extraction and evaluation instructions for identifying issues and problems."
-                    },
-                    "extractor": {
-                        "description": "Identifies issues from document chunks",
-                        "primary_task": "Find all issues, assign initial severity, and provide relevant context",
-                        "output_schema": {
-                            "title": "Concise issue label",
-                            "description": "Detailed explanation of the issue",
-                            "severity": "Initial severity assessment (critical/high/medium/low)",
-                            "category": "Issue category from the defined list",
-                            "context": "Relevant information from the document"
-                        },
-                        "instructions": "Carefully analyze each document chunk to identify issues, challenges, risks, or concerns. Focus on problems that might impact objectives, efficiency, or quality."
-                    },
-                    "aggregator": {
-                        "description": "Combines and deduplicates issues from all chunks",
-                        "primary_task": "Consolidate similar issues while preserving important distinctions",
-                        "instructions": "Combine similar issues from different chunks, ensuring that unique details and context are preserved. Remove duplicate issues and reconcile any conflicting severity ratings."
-                    },
-                    "evaluator": {
-                        "description": "Assesses issue severity and priority",
-                        "primary_task": "Analyze each issue's impact and assign final severity and priority",
-                        "evaluation_criteria": [
-                            "Impact scope (how many people/systems affected)",
-                            "Urgency (how soon it needs to be addressed)",
-                            "Consequence (what happens if not addressed)",
-                            "Complexity (how difficult it might be to solve)"
-                        ],
-                        "instructions": "Evaluate each issue against the assessment criteria. Consider both immediate and long-term impacts. Assign final severity ratings and prioritize the issues."
-                    },
-                    "formatter": {
-                        "description": "Creates the structured report",
-                        "primary_task": "Organize issues by severity and category into a clear report",
-                        "instructions": "Format the issues into a structured report, organizing them by severity and category. Create an executive summary highlighting the most critical issues."
-                    },
-                    "reviewer": {
-                        "description": "Ensures quality and alignment with user needs",
-                        "primary_task": "Verify report quality and alignment with user preferences",
-                        "instructions": "Review the generated report for accuracy, completeness, and alignment with the user's needs. Check for logical inconsistencies or missing important issues."
-                    }
-                },
-                "stage_weights": {
-                    "document_analysis": 0.05,
-                    "chunking": 0.05,
-                    "planning": 0.10,
-                    "extraction": 0.30,
-                    "aggregation": 0.20,
-                    "evaluation": 0.15,
-                    "formatting": 0.10,
-                    "review": 0.05
-                }
-            },
-            
-            "user_options": {
-                "detail_levels": {
-                    "essential": "Focus only on the most significant issues",
-                    "standard": "Balanced analysis of important issues",
-                    "comprehensive": "In-depth analysis of all potential issues"
-                },
-                "focus_areas": {
-                    "technical": "Implementation, architecture, technology issues",
-                    "process": "Workflow, procedure, methodology issues",
-                    "resource": "Staffing, budget, time, materials constraints",
-                    "quality": "Standards, testing, performance concerns",
-                    "risk": "Compliance, security, strategic risks"
-                }
-            },
-            
-            "report_format": {
-                "sections": [
-                    "Executive Summary",
-                    "Critical Issues",
-                    "High-Priority Issues", 
-                    "Medium-Priority Issues",
-                    "Low-Priority Issues"
-                ],
-                "issue_presentation": {
-                    "title": "Clear, descriptive title",
-                    "severity": "Visual indicator of severity",
-                    "description": "Full issue description",
-                    "impact": "Potential consequences",
-                    "category": "Issue category"
-                }
-            }
-        }
-    
-    def _get_issues_schema(self) -> Dict[str, Any]:
-        """Get the schema for issues assessment."""
-        return {
-            "type": "object",
-            "properties": {
-                "executive_summary": {
-                    "type": "string",
-                    "description": "A concise summary of the key issues found"
-                },
-                "issues": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "title": {
-                                "type": "string",
-                                "description": "Short, descriptive title of the issue"
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "Detailed explanation of the issue"
-                            },
-                            "severity": {
-                                "type": "string",
-                                "enum": ["critical", "high", "medium", "low"],
-                                "description": "Assessment of the issue's severity"
-                            },
-                            "category": {
-                                "type": "string",
-                                "enum": ["technical", "process", "resource", "quality", "risk", "compliance"],
-                                "description": "Category of the issue"
-                            },
-                            "impact": {
-                                "type": "string",
-                                "description": "Potential consequences if not addressed"
-                            },
-                            "evidence": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "text": {
-                                            "type": "string",
-                                            "description": "Source text supporting this issue"
-                                        },
-                                        "chunk_index": {
-                                            "type": "integer",
-                                            "description": "Index of the chunk containing this evidence"
-                                        }
-                                    },
-                                    "required": ["text"]
-                                }
-                            },
-                            "recommendations": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string",
-                                    "description": "Potential approaches to address the issue"
-                                }
-                            }
-                        },
-                        "required": ["title", "description", "severity", "category"]
-                    }
-                },
-                "statistics": {
-                    "type": "object",
-                    "properties": {
-                        "total_issues": {
-                            "type": "integer",
-                            "description": "Total number of issues identified"
-                        },
-                        "by_severity": {
-                            "type": "object",
-                            "properties": {
-                                "critical": {"type": "integer"},
-                                "high": {"type": "integer"},
-                                "medium": {"type": "integer"},
-                                "low": {"type": "integer"}
-                            }
-                        },
-                        "by_category": {
-                            "type": "object",
-                            "properties": {
-                                "technical": {"type": "integer"},
-                                "process": {"type": "integer"},
-                                "resource": {"type": "integer"},
-                                "quality": {"type": "integer"},
-                                "risk": {"type": "integer"},
-                                "compliance": {"type": "integer"}
-                            }
-                        }
-                    }
-                },
-                "metadata": {
-                    "type": "object",
-                    "properties": {
-                        "document_name": {"type": "string"},
-                        "word_count": {"type": "integer"},
-                        "processing_time": {"type": "number"},
-                        "date_analyzed": {"type": "string"},
-                        "assessment_type": {"type": "string"},
-                        "user_options": {"type": "object"}
-                    }
-                }
-            },
-            "required": ["executive_summary", "issues", "statistics", "metadata"]
-        }
-    
-    def _get_action_items_template(self) -> Dict[str, Any]:
-        """Get the template for action items assessment."""
-        # Similar to the JSON we already defined
-        return {
-            "crew_type": "action_items",
-            "description": "Identifies concrete follow-up tasks and commitments from meeting transcripts",
-            
-            "action_item_definition": {
-                "description": "A specific, actionable task that requires follow-up after the meeting, typically with an owner and timeframe",
-                "priority_levels": {
-                    "critical": "Must be completed urgently",
-                    "high": "Important task requiring prompt attention",
-                    "medium": "Standard priority task",
-                    "low": "Task to be done when time permits"
-                },
-                "status_types": [
-                    "assigned", "pending", "in_progress", "blocked", "completed"
-                ]
-            },
-            
-            "workflow": {
-                "enabled_stages": ["document_analysis", "chunking", "planning", "extraction", "aggregation", "evaluation", "formatting", "review"],
-                "agent_roles": {
-                    "planner": {
-                        "description": "Plans the analysis approach for action item identification",
-                        "primary_task": "Create tailored instructions for identifying true action items vs general statements",
-                        "instructions": "Study the document to identify its structure and purpose. Then create specific extraction and evaluation instructions for identifying real action items that require follow-up."
-                    },
-                    "extractor": {
-                        "description": "Identifies potential action items from document chunks",
-                        "primary_task": "Extract action-oriented statements with ownership and timing details",
-                        "output_schema": {
-                            "description": "Description of the action item",
-                            "owner": "Person or group responsible",
-                            "due_date": "When it should be completed",
-                            "priority": "Initial priority assessment",
-                            "confidence": "Confidence that this is a true action item requiring follow-up",
-                            "context": "Surrounding context from the document"
-                        },
-                        "instructions": "Extract action-oriented statements that appear to be tasks, commitments, or follow-ups. Look for indicators like assigned ownership, deadlines, or explicit commitments. Include both clear action items and potential ones for later filtering."
-                    },
-                    "aggregator": {
-                        "description": "Combines and deduplicates action items",
-                        "primary_task": "Consolidate similar action items while preserving ownership and timing details",
-                        "instructions": "Combine similar action items from different document sections. Preserve the most specific owner, due date, and priority information. Eliminate true duplicates but keep similar items that might represent different tasks."
-                    },
-                    "evaluator": {
-                        "description": "Assesses if extracted items are true action items requiring follow-up",
-                        "primary_task": "Filter out statements that aren't actual action items and assign final priorities",
-                        "evaluation_criteria": [
-                            "Actionability (is it clear what needs to be done)",
-                            "Ownership (is someone responsible)",
-                            "Timing (is there a timeframe)",
-                            "Commitment (was it agreed upon)",
-                            "Follow-up required (needs post-meeting attention)"
-                        ],
-                        "instructions": "Evaluate each potential action item to determine if it's a true action item requiring follow-up. Filter out general statements, hypotheticals, or discussion of past actions. A true action item should be clear, have an owner or way to assign ownership, and ideally have a timeframe. Assess priority based on urgency and importance mentioned."
-                    },
-                    "formatter": {
-                        "description": "Creates a structured action item list",
-                        "primary_task": "Format action items into a clear, actionable list organized by owner and priority",
-                        "instructions": "Create a well-structured action item list that can be easily shared after a meeting. Organize by owner and then priority. Include all relevant details like due dates and context for each item."
-                    },
-                    "reviewer": {
-                        "description": "Ensures action items are clear, actionable, and properly assigned",
-                        "primary_task": "Verify action items have clear owners, actions, and timelines where possible",
-                        "instructions": "Review the action item list for completeness and clarity. Ensure each item clearly states what needs to be done, who should do it, and when it should be completed (if specified). Check that no important action items from the document were missed."
-                    }
-                },
-                "stage_weights": {
-                    "document_analysis": 0.05,
-                    "chunking": 0.05,
-                    "planning": 0.10,
-                    "extraction": 0.30,
-                    "aggregation": 0.15,
-                    "evaluation": 0.20,
-                    "formatting": 0.10,
-                    "review": 0.05
-                }
-            },
-            
-            "user_options": {
-                "detail_levels": {
-                    "essential": "Include only clearly defined action items with owners",
-                    "standard": "Include most action items with reasonable confidence",
-                    "comprehensive": "Include all potential action items, even with lower confidence"
-                },
-                "format_options": {
-                    "by_owner": "Group action items by owner",
-                    "by_priority": "Group action items by priority",
-                    "by_due_date": "Group action items by timeline",
-                    "sequential": "List action items in the order they appeared"
-                }
-            },
-            
-            "report_format": {
-                "sections": [
-                    "Summary",
-                    "Action Items by Owner",
-                    "Action Items by Due Date"
-                ],
-                "action_item_presentation": {
-                    "owner": "Person responsible",
-                    "description": "What needs to be done",
-                    "due_date": "When it should be completed",
-                    "priority": "Visual indicator of priority",
-                    "context": "Meeting context"
-                }
-            }
-        }
-    
-    def _get_action_items_schema(self) -> Dict[str, Any]:
-        """Get the schema for action items assessment."""
-        return {
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": "A brief summary of the key action items"
-                },
-                "action_items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "description": {
-                                "type": "string",
-                                "description": "Clear description of what needs to be done"
-                            },
-                            "owner": {
-                                "type": "string",
-                                "description": "Person or group responsible for this action item"
-                            },
-                            "due_date": {
-                                "type": "string",
-                                "description": "When this action item should be completed"
-                            },
-                            "priority": {
-                                "type": "string",
-                                "enum": ["critical", "high", "medium", "low"],
-                                "description": "Priority level of the action item"
-                            },
-                            "status": {
-                                "type": "string",
-                                "enum": ["assigned", "pending", "in_progress", "blocked", "completed"],
-                                "description": "Current status of the action item"
-                            },
-                            "context": {
-                                "type": "string",
-                                "description": "Meeting context where this action item was discussed"
-                            },
-                            "confidence": {
-                                "type": "number",
-                                "minimum": 0,
-                                "maximum": 1,
-                                "description": "Confidence score that this is a true action item (0-1)"
-                            },
-                            "evidence": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "text": {
-                                            "type": "string",
-                                            "description": "Source text supporting this action item"
-                                        },
-                                        "chunk_index": {
-                                            "type": "integer",
-                                            "description": "Index of the chunk containing this evidence"
-                                        }
-                                    },
-                                    "required": ["text"]
-                                }
-                            }
-                        },
-                        "required": ["description", "owner", "priority"]
-                    }
-                },
-                "statistics": {
-                    "type": "object",
-                    "properties": {
-                        "total_action_items": {
-                            "type": "integer",
-                            "description": "Total number of action items identified"
-                        },
-                        "by_owner": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "integer"
-                            },
-                            "description": "Count of action items by owner"
-                        },
-                        "by_priority": {
-                            "type": "object",
-                            "properties": {
-                                "critical": {"type": "integer"},
-                                "high": {"type": "integer"},
-                                "medium": {"type": "integer"},
-                                "low": {"type": "integer"}
-                            }
-                        },
-                        "by_status": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "integer"
-                            }
-                        }
-                    }
-                },
-                "metadata": {
-                    "type": "object",
-                    "properties": {
-                        "document_name": {"type": "string"},
-                        "meeting_date": {"type": "string"},
-                        "word_count": {"type": "integer"},
-                        "processing_time": {"type": "number"},
-                        "date_analyzed": {"type": "string"},
-                        "assessment_type": {"type": "string"},
-                        "user_options": {"type": "object"}
-                    }
-                }
-            },
-            "required": ["summary", "action_items", "statistics", "metadata"]
-        }
-    
-    def _get_insights_template(self) -> Dict[str, Any]:
-        """Get the template for insights assessment."""
-        return {
-            "crew_type": "insights",
-            "description": "Performs SWOT analysis (Strengths, Weaknesses, Opportunities, Threats) on meeting transcripts with client context",
-            
-            "insight_definition": {
-                "description": "Meaningful observations about strengths, weaknesses, opportunities, and threats derived from the discussion",
-                "categories": {
-                    "strength": "Positive internal factors or capabilities mentioned in the discussion",
-                    "weakness": "Internal limitations, challenges, or areas for improvement",
-                    "opportunity": "External factors that could benefit the client or situation",
-                    "threat": "External challenges or risks that could negatively impact the client"
-                },
-                "impact_levels": {
-                    "high": "Major impact on business outcomes or strategy",
-                    "medium": "Moderate impact requiring attention",
-                    "low": "Minor impact worth noting"
-                }
-            },
-            
-            "workflow": {
-                "enabled_stages": ["document_analysis", "chunking", "planning", "extraction", "aggregation", "evaluation", "formatting", "review"],
-                "agent_roles": {
-                    "planner": {
-                        "description": "Plans the SWOT analysis approach with client context in mind",
-                        "primary_task": "Create tailored instructions for identifying SWOT elements relevant to client context",
-                        "instructions": "Study the document and client context to identify the most relevant insights. Create specific extraction and evaluation instructions that focus on SWOT elements particularly relevant to this client's situation."
-                    },
-                    "extractor": {
-                        "description": "Identifies SWOT elements from document chunks",
-                        "primary_task": "Extract statements that indicate strengths, weaknesses, opportunities, or threats",
-                        "output_schema": {
-                            "type": "SWOT category (strength, weakness, opportunity, threat)",
-                            "description": "Description of the insight",
-                            "impact": "Initial impact assessment",
-                            "confidence": "Confidence level in this assessment",
-                            "context": "Relevant context from the document"
-                        },
-                        "instructions": "Extract statements that indicate strengths, weaknesses, opportunities, or threats. Use the client context to guide your identification - what might be a strength for one organization could be a weakness for another. Look for explicit statements as well as implied insights."
-                    },
-                    "aggregator": {
-                        "description": "Combines and organizes SWOT elements",
-                        "primary_task": "Consolidate similar insights and organize by SWOT category",
-                        "instructions": "Combine similar insights while preserving nuance and detail. Organize insights into proper SWOT categories. Ensure insights are aligned with the client context provided."
-                    },
-                    "evaluator": {
-                        "description": "Assesses impact and relevance of SWOT elements",
-                        "primary_task": "Evaluate the impact and strategic importance of each insight given client context",
-                        "evaluation_criteria": [
-                            "Relevance to client context",
-                            "Strategic importance",
-                            "Actionability",
-                            "Time sensitivity",
-                            "Magnitude of potential impact"
-                        ],
-                        "instructions": "Evaluate each insight for its impact and strategic importance given the client context. Consider how actionable the insight is, its time sensitivity, and the magnitude of its potential impact. Prioritize insights that are most relevant to the client's specific situation and goals."
-                    },
-                    "formatter": {
-                        "description": "Creates a structured SWOT analysis report",
-                        "primary_task": "Format insights into a clear SWOT analysis organized by category and impact",
-                        "instructions": "Create a well-structured SWOT analysis report that clearly presents strengths, weaknesses, opportunities, and threats. Organize by impact level within each category. Include an executive summary that highlights the most important insights across categories."
-                    },
-                    "reviewer": {
-                        "description": "Ensures the SWOT analysis is balanced, insightful, and relevant to client context",
-                        "primary_task": "Verify insights are properly categorized and provide strategic value",
-                        "instructions": "Review the SWOT analysis for balance, accuracy, and strategic relevance. Ensure each insight is properly categorized and provides value. Check that the analysis is aligned with the client context and captures the most important insights from the discussion."
-                    }
-                },
-                "stage_weights": {
-                    "document_analysis": 0.05,
-                    "chunking": 0.05,
-                    "planning": 0.15,
-                    "extraction": 0.25,
-                    "aggregation": 0.15,
-                    "evaluation": 0.20,
-                    "formatting": 0.10,
-                    "review": 0.05
-                }
-            },
-            
-            "user_options": {
-                "detail_levels": {
-                    "essential": "Focus only on high-impact insights",
-                    "standard": "Include high and medium impact insights",
-                    "comprehensive": "Include all insights regardless of impact level"
-                },
-                "client_context": {
-                    "required": true,
-                    "description": "Background information about the client to ground the analysis",
-                    "fields": {
-                        "client_name": "Name of the organization or client",
-                        "industry": "Client's industry or sector",
-                        "size": "Organization size (revenue, employees)",
-                        "key_challenges": "Known challenges or issues",
-                        "objectives": "Client's goals or objectives for this engagement",
-                        "current_systems": "Current technology or process landscape",
-                        "additional_context": "Any other relevant background information"
-                    }
-                }
-            },
-            
-            "report_format": {
-                "sections": [
-                    "Executive Summary",
-                    "Strengths",
-                    "Weaknesses",
-                    "Opportunities",
-                    "Threats",
-                    "Strategic Recommendations"
-                ],
-                "insight_presentation": {
-                    "description": "Clear description of the insight",
-                    "impact": "Visual indicator of impact level",
-                    "evidence": "Supporting evidence from the transcript",
-                    "strategic_implication": "What this means for the client's strategy"
-                }
-            }
-        }
-    
-    def _get_insights_schema(self) -> Dict[str, Any]:
-        """Get the schema for insights assessment."""
-        return {
-            "type": "object",
-            "properties": {
-                "executive_summary": {
-                    "type": "string",
-                    "description": "A concise summary of the key insights from the SWOT analysis"
-                },
-                "client_context": {
-                    "type": "object",
-                    "properties": {
-                        "client_name": {"type": "string"},
-                        "industry": {"type": "string"},
-                        "size": {"type": "string"},
-                        "key_challenges": {"type": "string"},
-                        "objectives": {"type": "string"},
-                        "current_systems": {"type": "string"},
-                        "additional_context": {"type": "string"}
-                    }
-                },
-                "swot_analysis": {
-                    "type": "object",
-                    "properties": {
-                        "strengths": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "description": {"type": "string"},
-                                    "impact": {"type": "string", "enum": ["high", "medium", "low"]},
-                                    "strategic_implication": {"type": "string"},
-                                    "evidence": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "text": {"type": "string"},
-                                                "chunk_index": {"type": "integer"}
-                                            },
-                                            "required": ["text"]
-                                        }
-                                    }
-                                },
-                                "required": ["description", "impact"]
-                            }
-                        },
-                        "weaknesses": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "description": {"type": "string"},
-                                    "impact": {"type": "string", "enum": ["high", "medium", "low"]},
-                                    "strategic_implication": {"type": "string"},
-                                    "evidence": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "text": {"type": "string"},
-                                                "chunk_index": {"type": "integer"}
-                                            },
-                                            "required": ["text"]
-                                        }
-                                    }
-                                },
-                                "required": ["description", "impact"]
-                            }
-                        },
-                        "opportunities": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "description": {"type": "string"},
-                                    "impact": {"type": "string", "enum": ["high", "medium", "low"]},
-                                    "strategic_implication": {"type": "string"},
-                                    "evidence": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "text": {"type": "string"},
-                                                "chunk_index": {"type": "integer"}
-                                            },
-                                            "required": ["text"]
-                                        }
-                                    }
-                                },
-                                "required": ["description", "impact"]
-                            }
-                        },
-                        "threats": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "description": {"type": "string"},
-                                    "impact": {"type": "string", "enum": ["high", "medium", "low"]},
-                                    "strategic_implication": {"type": "string"},
-                                    "evidence": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "text": {"type": "string"},
-                                                "chunk_index": {"type": "integer"}
-                                            },
-                                            "required": ["text"]
-                                        }
-                                    }
-                                },
-                                "required": ["description", "impact"]
-                            }
-                        }
-                    },
-                    "required": ["strengths", "weaknesses", "opportunities", "threats"]
-                },
-                "strategic_recommendations": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "recommendation": {"type": "string"},
-                            "rationale": {"type": "string"},
-                            "related_insights": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            },
-                            "priority": {"type": "string", "enum": ["high", "medium", "low"]}
-                        },
-                        "required": ["recommendation", "rationale"]
-                    }
-                },
-                "statistics": {
-                    "type": "object",
-                    "properties": {
-                        "strengths_count": {"type": "integer"},
-                        "weaknesses_count": {"type": "integer"},
-                        "opportunities_count": {"type": "integer"},
-                        "threats_count": {"type": "integer"},
-                        "by_impact": {
-                            "type": "object",
-                            "properties": {
-                                "high": {"type": "integer"},
-                                "medium": {"type": "integer"},
-                                "low": {"type": "integer"}
-                            }
-                        },
-                        "recommendations_count": {"type": "integer"}
-                    }
-                },
-                "metadata": {
-                    "type": "object",
-                    "properties": {
-                        "document_name": {"type": "string"},
-                        "meeting_date": {"type": "string"},
-                        "word_count": {"type": "integer"},
-                        "processing_time": {"type": "number"},
-                        "date_analyzed": {"type": "string"},
-                        "assessment_type": {"type": "string"},
-                        "user_options": {"type": "object"}
-                    }
-                }
-            },
-            "required": ["executive_summary", "swot_analysis", "strategic_recommendations", "statistics", "metadata"]
-        }
-   
+                 logger.error(f"Template directory not found and no cache entry existed for deletion: {template_id}")
+                 return False
+
+        return deleted
+
+    def get_user_options(self, assessment_id: str) -> Dict[str, Any]:
+        """Get user-configurable options for a specific assessment."""
+        config = self.load_config(assessment_id)
+        return config.get("user_options", {}) if config else {}
+
+    def get_workflow_config(self, assessment_id: str) -> Dict[str, Any]:
+        """Get workflow configuration for a specific assessment."""
+        config = self.load_config(assessment_id)
+        return config.get("workflow", {}) if config else {}
+
+    def get_output_schema(self, assessment_id: str) -> Dict[str, Any]:
+        """Get output schema for a specific assessment."""
+        config = self.load_config(assessment_id)
+        return config.get("output_schema", {}) if config else {}
+
+    def _deep_update(self, target: Dict[str, Any], source: Dict[str, Any]) -> None:
+        """Recursively update nested dictionaries."""
+        for key, value in source.items():
+            if isinstance(target.get(key), dict) and isinstance(value, dict):
+                self._deep_update(target[key], value)
+            elif isinstance(target.get(key), list) and isinstance(value, list):
+                 target[key] = value # Replace lists for simplicity
+            else:
+                target[key] = value
+
+    def create_default_types(self) -> None:
+        """Create default base type JSON files if they don't exist, using the unified structure."""
+        try:
+            default_ids = [
+                "base_distill_summary_v1",
+                "base_extract_action_items_v1",
+                "base_assess_issue_v1",
+                "base_analyze_readiness_v1"
+            ]
+            created_count = 0
+            self._ensure_directories() # Ensure types dir exists
+
+            for assessment_id in default_ids:
+                 config_path = self.types_path / f"{assessment_id}.json"
+                 if not config_path.exists():
+                    # Attempt to load content from memory/string (requires base JSONs defined elsewhere)
+                    # This example assumes you have the content available as dicts
+                    # Replace with actual loading of your base file content
+                    base_content_dict = self._get_default_config_content(assessment_id) # Placeholder function
+                    if base_content_dict:
+                         try:
+                              with open(config_path, 'w', encoding='utf-8') as f:
+                                   json.dump(base_content_dict, f, indent=2)
+                              logger.info(f"Created default base type config file: {config_path}")
+                              created_count += 1
+                         except Exception as e:
+                              logger.error(f"Error writing default config file {config_path}: {str(e)}", exc_info=True)
+                    else:
+                         logger.error(f"Could not find or generate default content for '{assessment_id}'. Cannot create file.")
+                 else:
+                     logger.debug(f"Default config file already exists: {config_path}")
+
+            if created_count > 0:
+                 logger.info(f"Created {created_count} missing default base type config files.")
+                 self.reload() # Reload configs if defaults were created
+
+        except Exception as e:
+             logger.error(f"Error during creation of default types: {e}", exc_info=True)
+
+    def _get_default_config_content(self, assessment_id: str) -> Optional[Dict[str, Any]]:
+         """Placeholder: Load the default config content, e.g., from strings or embedded resources."""
+         # In a real scenario, load the JSON text you provided earlier based on assessment_id
+         logger.warning(f"Placeholder function _get_default_config_content called for {assessment_id}. Implement loading of actual base JSON content.")
+         # Example minimal structure:
+         if assessment_id == "base_distill_summary_v1":
+            # Load the full base_distill_summary_v1.json content here
+            return {"assessment_id": assessment_id, "assessment_type": "distill", "version": "1.0", "display_name":"Default Distill", "description": "...", "output_definition": {}, "workflow": {}, "output_schema": {}, "metadata": {}} # Replace with actual full content
+         # Add similar cases for other default IDs
+         return None
+
+    def reload(self) -> None:
+        """Clear cache and reload all configurations from disk."""
+        logger.info("Reloading all assessment configurations...")
+        self.configs = {}
+        self._load_configs_from_dir(self.types_path, is_template=False)
+        self._load_configs_from_dir(self.templates_path, is_template=True)
+        # Optionally run create_default_types here if you want it checked on every reload
+        # self.create_default_types()
+        self._log_loader_status()
+
+# Example usage
+if __name__ == "__main__":
+    print("--- Running AssessmentLoader Standalone Test ---")
+    # Assumes loader.py is in 'assessments' folder, and 'types', 'templates' are siblings
+    test_loader = AssessmentLoader() # Loads configs on init
+
+    print("\n--- Available Configs (Summary) ---")
+    configs_list = test_loader.get_assessment_configs_list()
+    if configs_list:
+        for cfg in configs_list:
+            print(f"- ID: {cfg['id']}, Name: {cfg['display_name']}, Type: {cfg['assessment_type']}, Template: {cfg['is_template']}")
+    else:
+         print("No configurations loaded.")
+
+    # ... (rest of the __main__ test block from previous version remains the same) ...
+    print("\n--- Loading a Base Type ---")
+    base_id = "base_extract_action_items_v1" # Use one of the base IDs
+    loaded_base = test_loader.load_config(base_id)
+    if loaded_base:
+        print(f"Successfully loaded '{base_id}'. Display Name: {loaded_base.get('display_name')}")
+    else:
+        print(f"Failed to load '{base_id}'. Ensure '{base_id}.json' exists in '{test_loader.types_path}' and is valid.")
+
+    print("\n--- Creating a Template ---")
+    new_template_name = "my_test_action_template_01" # Unique name
+    created_template_id = test_loader.create_template_from_base(base_id, new_template_name, "My Custom Action Template", "For testing purposes")
+    if created_template_id:
+         print(f"Successfully created template with ID: '{created_template_id}'")
+
+         print("\n--- Updating the Template ---")
+         updates = {
+             "description": "Updated description for testing.",
+             "user_options": {"detail_level": {"default": "essential"}, "new_option": {"type": "boolean", "default": True, "display_name": "New Flag"}},
+             "metadata": { "custom_field": "some_value" }
+         }
+         if test_loader.update_template(created_template_id, updates):
+              print(f"Successfully updated template '{created_template_id}'.")
+              updated_config = test_loader.load_config(created_template_id)
+              if updated_config:
+                   print(f" Updated Description: {updated_config.get('description')}")
+                   print(f" Custom Metadata: {updated_config.get('metadata', {}).get('custom_field')}")
+         else:
+              print(f"Failed to update template '{created_template_id}'.")
+
+         print("\n--- Deleting the Template ---")
+         if test_loader.delete_template(created_template_id):
+             print(f"Successfully deleted template '{created_template_id}'.")
+             if not test_loader.load_config(created_template_id):
+                  print("Verified: Template cannot be loaded after deletion.")
+             else:
+                  print("Error: Template still loadable after deletion attempt.")
+         else:
+             print(f"Failed to delete template '{created_template_id}'.")
+    else:
+         print(f"Failed to create template '{new_template_name}'. Skipping update/delete tests.")
+
+    print("\n--- Test Complete ---")

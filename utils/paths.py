@@ -1,4 +1,3 @@
-# utils/paths.py
 import os
 from pathlib import Path
 
@@ -27,7 +26,18 @@ class AppPaths:
     CACHE = DATA / "cache"
     SAMPLES = DATA / "samples"
     
-    # Output subpaths
+    # Assessment paths
+    ASSESSMENTS = ROOT / "assessments"
+    ASSESSMENT_TYPES = ASSESSMENTS / "types"
+    ASSESSMENT_TEMPLATES = ASSESSMENTS / "templates"
+    
+    # Output subpaths - all assessment types
+    DISTILL_OUTPUT = OUTPUT / "distill"
+    EXTRACT_OUTPUT = OUTPUT / "extract"
+    ASSESS_OUTPUT = OUTPUT / "assess"
+    ANALYZE_OUTPUT = OUTPUT / "analyze"
+    
+    # Legacy output paths (for backward compatibility)
     ISSUES_OUTPUT = OUTPUT / "issues"
     ACTION_ITEMS_OUTPUT = OUTPUT / "action_items"
     INSIGHTS_OUTPUT = OUTPUT / "insights"
@@ -47,6 +57,18 @@ class AppPaths:
         output_dir = cls.OUTPUT / assessment_type
         output_dir.mkdir(exist_ok=True, parents=True)
         return output_dir
+    
+    @classmethod
+    def get_types_dir(cls):
+        """Get directory for assessment types."""
+        cls.ASSESSMENT_TYPES.mkdir(exist_ok=True, parents=True)
+        return cls.ASSESSMENT_TYPES
+    
+    @classmethod
+    def get_templates_dir(cls):
+        """Get directory for assessment templates."""
+        cls.ASSESSMENT_TEMPLATES.mkdir(exist_ok=True, parents=True)
+        return cls.ASSESSMENT_TEMPLATES
     
     @classmethod
     def get_upload_path(cls, filename):

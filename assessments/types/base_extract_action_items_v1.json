@@ -1,0 +1,135 @@
+{
+  "assessment_id": "base_extract_action_items_v1",
+  "assessment_type": "extract",
+  "version": "1.0",
+  "display_name": "Action Item Extraction",
+  "description": "Identifies concrete follow-up tasks and commitments from meeting transcripts",
+
+  "output_definition": {},
+  "entity_definition": {
+    "name": "action_item",
+    "plural": "action_items",
+    "description": "A specific, actionable task that requires follow-up after the meeting, typically with an owner and timeframe",
+    "properties": {
+      "description": {"type": "text", "required": true, "description": "Clear description of what needs to be done"},
+      "owner": {"type": "text", "required": true, "description": "Person or group responsible for this action item"},
+      "due_date": {"type": "text", "required": false, "description": "When this action item should be completed"},
+      "priority": {"type": "enum", "options": ["critical", "high", "medium", "low"], "default": "medium", "descriptions": {"critical": "Must be completed urgently", "high": "Important task", "medium": "Standard priority", "low": "Low priority"}},
+      "status": {"type": "enum", "options": ["assigned", "pending", "in_progress", "blocked", "completed"], "default": "assigned", "descriptions": {"assigned": "Assigned", "pending": "Pending", "in_progress": "In Progress", "blocked": "Blocked", "completed": "Completed"}},
+      "context": {"type": "text", "required": false, "description": "Relevant context about the action item"}
+    },
+    "classification": {
+      "primary_dimension": "owner",
+      "secondary_dimension": "priority",
+      "sorting": "priority_desc"
+    }
+  },
+  "framework_definition": {},
+
+  "extraction_criteria": {
+    "indicators": [
+      "Explicit assignments ('X will do Y', 'X is responsible for')",
+      "Commitments ('I'll take care of', 'I'll handle that')",
+      "Deadlines ('by next Friday', 'within two weeks')",
+      "Action verbs followed by tasks ('create', 'develop', 'research')",
+      "Follow-up mentions ('we need to follow up on', 'let's check back on')",
+      "Task language ('task', 'action item', 'to-do')"
+    ],
+    "confidence_thresholds": {
+      "high": 0.8,
+      "medium": 0.6,
+      "low": 0.4
+    }
+  },
+  "workflow": {
+    "enabled_stages": [
+      "document_analysis",
+      "chunking",
+      "planning",
+      "extraction",
+      "aggregation",
+      "evaluation",
+      "formatting"
+    ],
+    "agent_instructions": {
+      "planner": "Study the document to identify its structure and purpose. Create specific extraction instructions for identifying action items based on entity_definition and extraction_criteria. Look for indicators that distinguish between general discussion and actual commitments.",
+      "extractor": "Extract potential action items matching entity_definition properties using extraction_criteria indicators. Capture description, owner, due_date, and context. Provide an initial priority assessment based on keywords and confidence.",
+      "aggregator": "Combine similar action items from different chunks, preserving the most specific details defined in entity_definition.properties. Eliminate exact duplicates.",
+      "evaluator": "Evaluate each potential action item based on clarity, ownership, and timeframe. Assign final priority using entity_definition.properties.priority options and confidence. Filter out non-actionable statements.",
+      "formatter": "Create a structured action item list based on output_schema and output_format. Organize items as specified in entity_definition.classification. Include all properties defined in entity_definition.properties."
+    },
+    "stage_weights": {
+      "document_analysis": 0.05,
+      "chunking": 0.05,
+      "planning": 0.10,
+      "extraction": 0.35,
+      "aggregation": 0.15,
+      "evaluation": 0.15,
+      "formatting": 0.15
+    }
+  },
+  "user_options": {
+    "detail_level": {
+      "type": "select",
+      "options": {"essential": "Include only clearly defined action items", "standard": "Include most action items", "comprehensive": "Include all potential action items"},
+      "default": "standard",
+      "display_name": "Detail Level",
+      "description": "Controls which action items to include based on confidence"
+    },
+    "grouping": {
+      "type": "select",
+      "options": {"by_owner": "Group by owner", "by_priority": "Group by priority", "by_due_date": "Group by due date", "sequential": "List sequentially"},
+      "default": "by_owner",
+      "display_name": "Grouping Method",
+      "description": "How to organize the action items in the report"
+    },
+    "include_context": {
+      "type": "boolean",
+      "default": true,
+      "display_name": "Include Context",
+      "description": "Include background context for each action item"
+    }
+  },
+  "output_format": {
+    "sections": ["summary", "action_items_by_owner", "action_items_by_due_date"],
+    "presentation": {"owner_format": "bold_name", "due_date_format": "relative_and_absolute", "priority_indicator": "visual_tag"}
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "summary": {"type": "string", "description": "A brief summary of the key action items"},
+      "action_items": {
+        "type": "array",
+        "description": "List of identified action items",
+        "items": {
+          "type": "object",
+          "properties": { 
+            "description": {"type": "string"},
+            "owner": {"type": "string"},
+            "due_date": {"type": "string"},
+            "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+            "status": {"type": "string", "enum": ["assigned", "pending", "in_progress", "blocked", "completed"]},
+            "context": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "evidence": {"type": "array", "items": {"type": "object", "properties": {"text": {"type": "string"}, "chunk_index": {"type": "integer"}}, "required": ["text"]}}
+          },
+          "required": ["description", "owner", "priority"] 
+        }
+      },
+      "statistics": {
+        "type": "object", "properties": {"total_action_items": {"type": "integer"}, "by_owner": {"type": "object", "additionalProperties": {"type": "integer"}}, "by_priority": {"type": "object", "properties": {"critical": {}, "high": {}, "medium": {}, "low": {}}}, "by_status": {"type": "object", "additionalProperties": {"type": "integer"}}}
+      },
+      "metadata": {
+        "type": "object", "properties": {"document_name": {"type": "string"}, "meeting_date": {"type": "string"}, "word_count": {"type": "integer"}, "processing_time": {"type": "number"}, "date_analyzed": {"type": "string"}, "assessment_id": {"type": "string"}, "user_options": {"type": "object"}}
+      }
+    },
+    "required": ["summary", "action_items", "statistics", "metadata"]
+  },
+  "metadata": {
+    "created_date": "2025-03-31",
+    "last_modified_date": "2025-03-31",
+    "created_by": "System",
+    "is_template": false,
+    "base_assessment_id": null
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "assessment_id": "base_assess_issue_v1",
+  "assessment_type": "assess",
+  "version": "1.0",
+  "display_name": "Issue Assessment",
+  "description": "Identifies problems, challenges, risks, and concerns in documents",
+
+  "output_definition": {},
+  "entity_definition": {
+    "name": "issue",
+    "plural": "issues",
+    "description": "Any problem, challenge, risk, or concern that may impact objectives, efficiency, or quality",
+    "properties": {
+      "title": {"type": "text", "required": true, "description": "Short, descriptive title of the issue"},
+      "description": {"type": "text", "required": true, "description": "Detailed explanation of the issue"},
+      "severity": {"type": "enum", "options": ["critical", "high", "medium", "low"], "default": "medium", "descriptions": {"critical": "Immediate threat", "high": "Significant impact", "medium": "Moderate impact", "low": "Minor impact"}},
+      "category": {"type": "enum", "options": ["technical", "process", "resource", "quality", "risk", "compliance"], "default": "process", "descriptions": {"technical": "Tech/systems", "process": "Workflows/methods", "resource": "Staff/budget/time", "quality": "Standards/performance", "risk": "Potential future problems", "compliance": "Regulatory/policy"}},
+      "impact": {"type": "text", "required": false, "description": "Potential consequences if not addressed"},
+      "recommendations": {"type": "array", "items": {"type": "text"}, "description": "Suggested approaches to address the issue"}
+    },
+    "classification": {
+      "primary_dimension": "severity",
+      "secondary_dimension": "category",
+      "sorting": "severity_desc"
+    }
+  },
+  "framework_definition": {},
+
+  "extraction_criteria": {
+    "indicators": [
+      "Problem statements ('the issue is', 'a challenge we face')",
+      "Risk references ('there's a risk that', 'we might encounter')",
+      "Concern expressions ('I'm worried about', 'a concern is')",
+      "Limitation descriptions ('we're constrained by', 'limited by')",
+      "Negative outcomes ('this could cause', 'resulting in')",
+      "Barrier language ('obstacle', 'roadblock', 'hindrance')"
+    ],
+    "confidence_thresholds": {
+      "high": 0.8,
+      "medium": 0.6,
+      "low": 0.4
+    }
+  },
+  "workflow": {
+    "enabled_stages": [
+      "document_analysis",
+      "chunking",
+      "planning",
+      "extraction",
+      "aggregation",
+      "evaluation",
+      "formatting"
+    ],
+    "agent_instructions": {
+      "planner": "Study the document's context. Create extraction instructions for identifying issues matching entity_definition using extraction_criteria indicators.",
+      "extractor": "Extract potential issues matching entity_definition properties using extraction_criteria indicators. Capture title, description, and context. Provide initial severity/category assessment.",
+      "aggregator": "Combine similar issues from different chunks, preserving details defined in entity_definition.properties. Remove duplicates.",
+      "evaluator": "Evaluate each issue's impact, urgency, and consequence. Assign final severity and category based on entity_definition.properties options. Suggest recommendations if possible.",
+      "formatter": "Create a structured issue report based on output_schema and output_format. Organize issues as specified in entity_definition.classification. Include all properties defined in entity_definition.properties."
+    },
+    "stage_weights": {
+      "document_analysis": 0.05,
+      "chunking": 0.05,
+      "planning": 0.10,
+      "extraction": 0.35,
+      "aggregation": 0.15,
+      "evaluation": 0.15,
+      "formatting": 0.15
+    }
+  },
+  "user_options": {
+    "detail_level": {
+      "type": "select",
+      "options": {"essential": "Focus only on the most significant issues", "standard": "Balanced analysis", "comprehensive": "In-depth analysis of all potential issues"},
+      "default": "standard",
+      "display_name": "Detail Level",
+      "description": "Controls the depth of issue analysis"
+    },
+    "focus_categories": {
+      "type": "multi_select",
+      "options": ["technical", "process", "resource", "quality", "risk", "compliance"], 
+      "default": [],
+      "display_name": "Focus Categories",
+      "description": "Optionally focus on specific issue categories (empty means all)"
+    },
+    "minimum_severity": {
+      "type": "select",
+      "options": {"low": "Include all issues", "medium": "Medium severity and above", "high": "Only high and critical", "critical": "Critical issues only"}, 
+
+      "default": "low",
+      "display_name": "Minimum Severity",
+      "description": "Minimum severity level to include in results"
+    }
+  },
+  "output_format": {
+    "sections": ["executive_summary", "critical_issues", "high_priority_issues", "medium_priority_issues", "low_priority_issues"],
+    "presentation": {"severity_indicator": "color_coded", "category_display": "icon_with_label", "recommendation_style": "bulleted_list"}
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "executive_summary": {"type": "string", "description": "A concise summary of the key issues found"},
+      "issues": {
+        "type": "array",
+        "description": "List of identified issues",
+        "items": {
+          "type": "object",
+          "properties": { 
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+            "category": {"type": "string", "enum": ["technical", "process", "resource", "quality", "risk", "compliance"]},
+            "impact": {"type": "string"},
+            "recommendations": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "evidence": {"type": "array", "items": {"type": "object", "properties": {"text": {"type": "string"}, "chunk_index": {"type": "integer"}}, "required": ["text"]}}
+          },
+          "required": ["title", "description", "severity", "category"] 
+        }
+      },
+      "statistics": {
+        "type": "object", "properties": {"total_issues": {"type": "integer"}, "by_severity": {"type": "object", "properties": {"critical": {}, "high": {}, "medium": {}, "low": {}}}, "by_category": {"type": "object", "properties": {"technical": {}, "process": {}, "resource": {}, "quality": {}, "risk": {}, "compliance": {}}}}
+      },
+      "metadata": {
+        "type": "object", "properties": {"document_name": {"type": "string"}, "word_count": {"type": "integer"}, "processing_time": {"type": "number"}, "date_analyzed": {"type": "string"}, "assessment_id": {"type": "string"}, "user_options": {"type": "object"}}
+      }
+    },
+    "required": ["executive_summary", "issues", "statistics", "metadata"]
+  },
+  "metadata": {
+    "created_date": "2025-03-31",
+    "last_modified_date": "2025-03-31",
+    "created_by": "System",
+    "is_template": false,
+    "base_assessment_id": null
+  }
+}

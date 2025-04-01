@@ -1,183 +1,248 @@
 # core/agents/base.py
-from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List
-import asyncio
+import logging
 import json
-import time
+from abc import ABC, abstractmethod
+from typing import Dict, Any, Optional, Tuple, List
 
+# Import CustomLLM and ProcessingContext
+from core.llm.customllm import CustomLLM, UsageDict
 from core.models.context import ProcessingContext
-from core.llm.customllm import CustomLLM
 
-class Agent(ABC):
+class BaseAgent(ABC):
     """
-    Base class for all agents in the beyond-notes system.
+    Abstract base class for agents, handling LLM interaction, options, logging,
+    and defining the standard 'process' interface.
     
-    Agents are specialized components that perform specific tasks
-    within the document processing pipeline.
+    Features standardized data storage and retrieval methods for the enhanced
+    ProcessingContext, token tracking, and consistent logging.
     """
-    
-    def __init__(self, llm: CustomLLM, options: Optional[Dict[str, Any]] = None):
-        """
-        Initialize an agent.
-        
-        Args:
-            llm: Language model for agent operations
-            options: Configuration options for the agent
-        """
+
+    def __init__(self,
+                 llm: CustomLLM,
+                 options: Optional[Dict[str, Any]] = None):
+        """Initialize BaseAgent with LLM instance and optional agent-specific options."""
+        if llm is None:
+            raise ValueError("LLM instance cannot be None.")
+
         self.llm = llm
         self.options = options or {}
+        self.role = "base"  # Should be overridden by subclasses
         self.name = self.__class__.__name__
-    
+        self.logger = logging.getLogger(f"core.agents.{self.name}")
+
+        self.logger.info(f"Agent '{self.name}' initialized for role '{self.role}'.")
+        if self.options:
+            self.logger.debug(f"Agent '{self.name}' options: {self.options}")
+
     @abstractmethod
-    async def process(self, context: ProcessingContext) -> Dict[str, Any]:
-        """
-        Process the document using this agent's specific logic.
-        
-        Args:
-            context: The shared processing context
-            
-        Returns:
-            Processing results specific to this agent
-        """
+    async def process(self, context: ProcessingContext) -> Any:
+        """Main processing method to be implemented by subclasses."""
         pass
-    
-    async def generate_completion(self, 
-                                prompt: str, 
-                                max_tokens: int = 1000,
-                                temperature: float = 0.7) -> str:
+
+    # --- Enhanced Context Interaction Methods ---
+
+    def _store_data(self, context: ProcessingContext, data_type: str, data: Any) -> None:
         """
-        Generate text using the agent's LLM.
+        Store agent results in the ProcessingContext using the standardized method.
+        
+        Args:
+            context: The ProcessingContext
+            data_type: Type of data (e.g., "action_items", "issues", "overall_assessment")
+            data: The data to store
+        """
+        context.store_agent_data(self.role, data_type, data)
+        self._log_debug(f"Stored {data_type} data in context", context)
+        
+    def _get_data(self, context: ProcessingContext, agent_role: str, data_type: str, default=None) -> Any:
+        """
+        Retrieve data from the ProcessingContext using the standardized method.
+        
+        Args:
+            context: The ProcessingContext
+            agent_role: Role of the agent that stored the data (e.g., "extractor", "aggregator")
+            data_type: Type of data to retrieve
+            default: Default value if not found
+            
+        Returns:
+            The retrieved data or default value
+        """
+        result = context.get_data_for_agent(agent_role, data_type)
+        if result is None or (isinstance(result, list) and len(result) == 0):
+            self._log_debug(f"No {data_type} data found from {agent_role}", context)
+            return default
+        
+        self._log_debug(f"Retrieved {data_type} data from {agent_role}", context)
+        return result
+    
+    def _add_evidence(self, context: ProcessingContext, item_id: str, 
+                     evidence_text: str, chunk_index: Optional[int] = None) -> str:
+        """
+        Add evidence to the context for an item.
+        
+        Args:
+            context: The ProcessingContext
+            item_id: The ID of the item being evidenced
+            evidence_text: The text supporting the item
+            chunk_index: Optional chunk index for source tracking
+            
+        Returns:
+            The evidence reference ID
+        """
+        source_info = {"chunk_index": chunk_index} if chunk_index is not None else None
+        return context.add_evidence(item_id, evidence_text, source_info)
+
+    # --- Logging Helpers ---
+    
+    def _log_info(self, message: str, context: Optional[ProcessingContext] = None) -> None:
+        """Log an info message, optionally including context run_id."""
+        prefix = f"[{context.run_id}] " if context else ""
+        self.logger.info(f"{prefix}{message}")
+
+    def _log_debug(self, message: str, context: Optional[ProcessingContext] = None) -> None:
+        """Log a debug message, optionally including context run_id."""
+        prefix = f"[{context.run_id}] " if context else ""
+        self.logger.debug(f"{prefix}{message}")
+
+    def _log_warning(self, message: str, context: Optional[ProcessingContext] = None) -> None:
+        """Log a warning message, optionally including context run_id."""
+        prefix = f"[{context.run_id}] " if context else ""
+        self.logger.warning(f"{prefix}{message}")
+        if context:
+            context.add_warning(message, stage=context.metadata.get("current_stage"))
+
+    def _log_error(self, message: str, context: Optional[ProcessingContext] = None, exc_info=False) -> None:
+        """Log an error message, optionally including context run_id and exception info."""
+        prefix = f"[{context.run_id}] " if context else ""
+        self.logger.error(f"{prefix}{message}", exc_info=exc_info)
+
+    # --- LLM Interaction Wrappers ---
+
+    async def _generate(self, 
+                       prompt: str, 
+                       context: ProcessingContext, 
+                       system_prompt: Optional[str]=None, 
+                       **kwargs) -> str:
+        """
+        Wrapper for LLM completion call with logging, error handling, and token tracking.
         
         Args:
             prompt: The prompt to send to the LLM
-            max_tokens: Maximum number of tokens to generate
-            temperature: Sampling temperature
+            context: The ProcessingContext for tracking tokens and logging
+            system_prompt: Optional system message
+            **kwargs: Additional parameters to pass to the LLM
             
         Returns:
-            Generated text
+            The generated text string
         """
-        return await self.llm.generate_completion(
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-    
-    async def generate_structured_output(self,
-                                       prompt: str,
-                                       json_schema: Dict[str, Any],
-                                       max_tokens: int = 1000,
-                                       temperature: float = 0.7) -> Dict[str, Any]:
-        """
-        Generate a structured output in JSON format from the LLM.
+        self._log_debug(f"Generating LLM completion. Prompt length: {len(prompt)}", context)
+        context.log_agent_action(self.name, "llm_call_start", {"prompt_length": len(prompt), **kwargs})
         
-        Args:
-            prompt: The prompt to send to the LLM
-            json_schema: JSON schema defining the expected response structure
-            max_tokens: Maximum number of tokens to generate
-            temperature: Sampling temperature
+        try:
+            # Default LLM parameters from agent options or method kwargs
+            llm_params = {
+                "max_tokens": self.options.get("max_tokens", 1500),
+                "temperature": self.options.get("temperature", 0.5),
+                **kwargs  # Allow overriding via direct call args
+            }
             
-        Returns:
-            Generated JSON response
-        """
-        return await self.llm.generate_structured_output(
-            prompt=prompt,
-            json_schema=json_schema,
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-    
-    def log_info(self, context: ProcessingContext, message: str) -> None:
-        """Add an info message to the context."""
-        context.log_agent_action(self.name, "info", {"message": message})
-    
-    def log_error(self, context: ProcessingContext, message: str) -> None:
-        """Add an error message to the context."""
-        context.log_agent_action(self.name, "error", {"message": message})
-    
-    def log_warning(self, context: ProcessingContext, message: str) -> None:
-        """Add a warning message to the context."""
-        context.log_agent_action(self.name, "warning", {"message": message})
-    
-    def log_action(self, context: ProcessingContext, action: str, details: Optional[Dict[str, Any]] = None) -> None:
-        """Log an agent action."""
-        context.log_agent_action(self.name, action, details or {})
-    
-    def get_agent_instructions(self, context: ProcessingContext) -> str:
-        """
-        Get instructions for this agent from the assessment configuration.
-        
-        Args:
-            context: The processing context
-            
-        Returns:
-            Instructions string or empty string if not found
-        """
-        assessment_config = context.assessment_config
-        if not assessment_config:
-            return ""
-        
-        workflow = assessment_config.get("workflow", {})
-        agent_roles = workflow.get("agent_roles", {})
-        
-        # Extract the role name from the class name
-        role = self.name.lower().replace("agent", "")
-        
-        if role in agent_roles:
-            return agent_roles[role].get("instructions", "")
-        
-        return ""
-    
-    async def process_in_batches(self, 
-                               context: ProcessingContext,
-                               items: List[Any],
-                               process_func,
-                               batch_size: int = 3,
-                               delay: float = 0.1) -> List[Any]:
-        """
-        Process a list of items in batches to avoid rate limits.
-        
-        Args:
-            context: The processing context
-            items: List of items to process
-            process_func: Async function to process each item
-            batch_size: Size of each batch
-            delay: Delay between batches in seconds
-            
-        Returns:
-            List of processing results
-        """
-        results = []
-        total_batches = (len(items) + batch_size - 1) // batch_size
-        
-        for batch_idx in range(total_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min(start_idx + batch_size, len(items))
-            
-            # Create batch tasks
-            batch_tasks = [
-                process_func(item, i) 
-                for i, item in enumerate(items[start_idx:end_idx], start=start_idx)
-            ]
-            
-            # Process batch
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-            
-            # Handle results
-            for i, result in enumerate(batch_results):
-                if isinstance(result, Exception):
-                    self.log_error(context, f"Error processing item {start_idx + i}: {str(result)}")
-                    results.append({"error": str(result), "index": start_idx + i})
-                else:
-                    results.append(result)
-            
-            # Update progress
-            progress = (batch_idx + 1) / total_batches
-            context.update_stage_progress(
-                progress, f"Processed batch {batch_idx+1}/{total_batches} ({end_idx}/{len(items)} items)"
+            # Call the LLM method which returns (result_str, usage_dict)
+            result_str, usage_dict = await self.llm.generate_completion(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                **llm_params
             )
-            
-            # Delay between batches to avoid rate limits
-            if batch_idx < total_batches - 1:
-                await asyncio.sleep(delay)
+
+            # Track token usage using info from the returned usage_dict
+            total_tokens = usage_dict.get("total_tokens")
+            if total_tokens is not None:
+                context.track_token_usage(total_tokens)
+            else:
+                self._log_warning("Token usage information missing from LLM response.", context)
+                total_tokens = 0  # Assume 0 if missing
+
+            context.log_agent_action(self.name, "llm_call_success", 
+                                    {"response_length": len(result_str), "usage": usage_dict})
+            self._log_debug(f"LLM call successful. Response length: {len(result_str)}, Tokens: {total_tokens}", context)
+
+            return result_str  # Return only the string result
+
+        except Exception as e:
+            self._log_error(f"LLM completion failed: {e}", context, exc_info=True)
+            context.log_agent_action(self.name, "llm_call_error", {"error": str(e)})
+            raise RuntimeError(f"LLM call failed for agent {self.name}") from e
+
+
+    async def _generate_structured(self, 
+                                prompt: str, 
+                                output_schema: Dict, 
+                                context: ProcessingContext, 
+                                system_prompt: Optional[str]=None, 
+                                **kwargs) -> Dict[str, Any]:
+        """
+        Wrapper for structured LLM call with logging, error handling, and token tracking.
         
-        return results
+        Args:
+            prompt: The prompt to send to the LLM
+            output_schema: JSON schema defining the expected output structure
+            context: The ProcessingContext for tracking tokens and logging
+            system_prompt: Optional system message
+            **kwargs: Additional parameters to pass to the LLM
+            
+        Returns:
+            The generated structured output as a dictionary
+        """
+        self._log_debug(f"Generating structured LLM output. Schema keys: {list(output_schema.get('properties', {}).keys())}", context)
+        context.log_agent_action(self.name, "structured_llm_call_start", {"prompt_length": len(prompt), **kwargs})
+        
+        try:
+            # Verify schema structure has required elements
+            if "type" not in output_schema:
+                output_schema["type"] = "object"
+                self._log_debug("Added missing 'type': 'object' to output schema", context)
+                
+            if output_schema.get("type") == "object" and "properties" not in output_schema:
+                output_schema["properties"] = {}
+                self._log_debug("Added missing 'properties' to output schema", context)
+            
+            # Log important details for debugging
+            self._log_debug(f"Schema structure: {json.dumps(output_schema, indent=2)}", context)
+            
+            llm_params = {
+                "max_tokens": self.options.get("max_structured_tokens", 2000),
+                "temperature": self.options.get("structured_temperature", 0.2),
+                **kwargs
+            }
+            
+            # Call the LLM method which returns (result_dict, usage_dict)
+            result_dict, usage_dict = await self.llm.generate_structured_output(
+                prompt=prompt,
+                output_schema=output_schema,
+                system_prompt=system_prompt,
+                **llm_params
+            )
+
+            # Track token usage
+            total_tokens = usage_dict.get("total_tokens")
+            if total_tokens is not None:
+                context.track_token_usage(total_tokens)
+            else:
+                self._log_warning("Token usage information missing from structured LLM response.", context)
+                total_tokens = 0
+
+            context.log_agent_action(self.name, "structured_llm_call_success", {"usage": usage_dict})
+            self._log_debug(f"Structured LLM call successful. Tokens: {total_tokens}", context)
+
+            # Basic validation: Ensure we got a dictionary
+            if not isinstance(result_dict, dict):
+                raise TypeError(f"Structured LLM call did not return a dictionary as expected. Type: {type(result_dict)}")
+
+            return result_dict  # Return only the dictionary result
+
+        except Exception as e:
+            # Catch potential TypeErrors from validation above too
+            self._log_error(f"Structured LLM generation failed: {e}", context, exc_info=True)
+            context.log_agent_action(self.name, "structured_llm_call_error", {"error": str(e)})
+            
+            # Return an empty dictionary as a fallback
+            self._log_warning("Returning empty dict as fallback from failed structured LLM call", context)
+            return {}

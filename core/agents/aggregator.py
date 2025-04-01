@@ -1,357 +1,302 @@
 # core/agents/aggregator.py
-from typing import Dict, Any, List, Optional
+import logging
 import json
-import asyncio
+import copy
+from typing import Dict, Any, List, Optional
 
-from core.agents.base import Agent
+# Import base class and context/LLM types
+from .base import BaseAgent
+from core.llm.customllm import CustomLLM
 from core.models.context import ProcessingContext
 
-class AggregatorAgent(Agent):
+class AggregatorAgent(BaseAgent):
     """
-    The Aggregator Agent combines findings from different document sections,
-    eliminating redundancies and resolving conflicts.
+    Aggregates and consolidates information extracted by the ExtractorAgent.
+    Uses an LLM to deduplicate and merge similar items (e.g., issues, action items)
+    found across different document chunks, based on the assessment configuration.
     
-    Responsibilities:
-    - Merge information from multiple chunks
-    - Remove duplicated items and issues
-    - Resolve conflicting information
-    - Maintain source traceability
+    Uses the enhanced ProcessingContext for standardized data storage and retrieval.
     """
-    
-    async def process(self, context: ProcessingContext) -> Dict[str, Any]:
+
+    def __init__(self, llm: CustomLLM, options: Optional[Dict[str, Any]] = None):
+        """Initialize the AggregatorAgent."""
+        super().__init__(llm, options)
+        self.role = "aggregator"
+        self.name = "AggregatorAgent"
+        self.logger = logging.getLogger(f"core.agents.{self.name}")
+        self.logger.info(f"AggregatorAgent initialized.")
+
+    async def process(self, context: ProcessingContext) -> Optional[Dict[str, Any]]:
         """
-        Aggregate extracted information.
-        
+        Orchestrates the aggregation process based on assessment type.
+        Fetches extracted items, calls LLM for aggregation, stores results.
+
         Args:
-            context: The shared processing context
-            
+            context: The shared ProcessingContext object.
+
         Returns:
-            Aggregated results
+            A dictionary summarizing aggregation results (items before/after), or None.
         """
-        self.log_info(context, "Starting information aggregation")
+        self._log_info(f"Starting aggregation phase for assessment: '{context.display_name}'", context)
+
+        assessment_type = context.assessment_type
+        summary_stats = {"items_before": 0, "items_after": 0}
+        processed = False  # Flag to track if any aggregation was attempted
+
+        # --- Define data types based on assessment type ---
+        data_type_map = {
+            "extract": "action_items",
+            "assess": "issues",
+            "distill": "key_points",
+            "analyze": "evidence"
+        }
         
+        data_type = data_type_map.get(assessment_type)
+        if not data_type:
+            self._log_warning(f"Unsupported assessment type '{assessment_type}'. Skipping aggregation.", context)
+            return None
+
         try:
-            # Get extraction results from context
-            extraction_results = context.results.get("extraction", {})
-            chunk_extractions = extraction_results.get("chunk_extractions", [])
-            
-            if not chunk_extractions:
-                self.log_error(context, "No extraction results available for aggregation")
-                raise ValueError("No extraction results available for aggregation")
-            
-            # Get custom instructions from assessment config
-            agent_instructions = self.get_agent_instructions(context)
-            
-            # Deduplicate issues
-            self.log_info(context, "Deduplicating issues")
-            issues = context.extracted_info["issues"]
-            deduplicated_issues = await self._deduplicate_issues(context, issues, agent_instructions)
-            
-            # Update issues in context
-            context.extracted_info["issues"] = deduplicated_issues
-            
-            # Combine and synthesize key points
-            self.log_info(context, "Synthesizing key points")
-            key_points = context.extracted_info["key_points"]
-            synthesized_key_points = await self._synthesize_key_points(context, key_points, agent_instructions)
-            
-            # Update key points in context
-            context.extracted_info["key_points"] = synthesized_key_points
-            
-            # Create the aggregated output
-            aggregation_output = {
-                "issues": deduplicated_issues,
-                "entities": list(context.entities.values()),
-                "key_points": synthesized_key_points,
-                "statistics": {
-                    "issues_raw": len(issues),
-                    "issues_deduplicated": len(deduplicated_issues),
-                    "entities": len(context.entities),
-                    "key_points_raw": len(key_points),
-                    "key_points_synthesized": len(synthesized_key_points)
-                }
+            # --- Get Data To Aggregate using the enhanced context method ---
+            items_to_aggregate = self._get_data(context, "extractor", data_type, [])
+            items_before = len(items_to_aggregate)
+            summary_stats["items_before"] = items_before
+
+            if not isinstance(items_to_aggregate, list):
+                self._log_error(f"Data from extractor is not a list (Type: {type(items_to_aggregate)}). Cannot aggregate.", context)
+                raise TypeError(f"Input data for aggregation is not a list.")
+
+            self._log_info(f"Found {items_before} raw {data_type} from extractor.", context)
+
+            # --- Perform Aggregation (if necessary) ---
+            if items_before <= 1:
+                self._log_info(f"Skipping aggregation as only {items_before} {data_type} found.", context)
+                aggregated_list = copy.deepcopy(items_to_aggregate)  # Pass through original if <= 1
+            else:
+                processed = True  # Aggregation will be attempted
+                # Call the LLM-based aggregation method
+                aggregated_list = await self._aggregate_items_llm(
+                    context=context,
+                    items=items_to_aggregate,
+                    data_type=data_type,
+                    assessment_type=assessment_type
+                )
+
+            items_after = len(aggregated_list)
+            summary_stats["items_after"] = items_after
+
+            # --- Store Aggregated Results using the enhanced context method ---
+            self._store_data(context, data_type, aggregated_list)
+            self._log_info(f"Stored {items_after} aggregated {data_type} in context", context)
+
+            if processed:
+                self._log_info(f"Aggregation phase complete. Before: {items_before}, After: {items_after}", context)
+            return summary_stats
+
+        except Exception as e:
+            self._log_error(f"Aggregation phase failed: {str(e)}", context, exc_info=True)
+            # Re-raise the exception so the orchestrator can mark the stage as failed
+            raise RuntimeError(f"Aggregation failed: {e}") from e
+
+    def _get_item_properties_schema(self, context: ProcessingContext, assessment_type: str) -> Dict[str, Any]:
+        """Helper to determine the expected properties of items being aggregated."""
+        target_definition = context.get_target_definition()
+        if not target_definition: 
+            return {}
+
+        properties = {}
+        if assessment_type in ["extract", "assess"]:
+            properties = target_definition.get("properties", {})
+        elif assessment_type == "distill":
+            # Define expected structure for key points from extractor
+            properties = {
+                "id": {"type": "string", "description": "Unique ID."},
+                "point_type": {"type": "string"}, 
+                "text": {"type": "string"},
+                "topic": {"type": "string"}, 
+                "importance": {"type": "string"}
             }
-            
-            self.log_info(context, f"Aggregation complete. Found {len(deduplicated_issues)} unique issues")
-            
-            return aggregation_output
-            
-        except Exception as e:
-            error_message = f"Aggregation failed: {str(e)}"
-            self.log_error(context, error_message)
-            raise
-    
-    async def _deduplicate_issues(self, 
-                                context: ProcessingContext,
-                                issues: List[Dict[str, Any]],
-                                agent_instructions: str) -> List[Dict[str, Any]]:
-        """
-        Deduplicate issues using the LLM.
+        elif assessment_type == "analyze":
+            # Define expected structure for evidence snippets from extractor
+            properties = {
+                "id": {"type": "string", "description": "Unique ID."},
+                "dimension": {"type": "string"}, 
+                "criteria": {"type": "string"},
+                "evidence_text": {"type": "string"}, 
+                "commentary": {"type": "string"}
+            }
         
-        Args:
-            context: The processing context
-            issues: List of issues to deduplicate
-            agent_instructions: Instructions from the assessment config
-            
-        Returns:
-            List of deduplicated issues
-        """
-        if not issues:
-            return []
-            
-        if len(issues) <= 1:
-            return issues
+        # Add simple descriptions if missing for prompt clarity
+        for key, value in properties.items():
+            if isinstance(value, dict) and "description" not in value:
+                value["description"] = f"The {key.replace('_', ' ')} of the item."
+
+        return properties
+
+    async def _aggregate_items_llm(self,
+                               context: ProcessingContext,
+                               items: List[Dict[str, Any]],
+                               data_type: str,
+                               assessment_type: str) -> List[Dict[str, Any]]:
+        """Uses an LLM to deduplicate and merge a list of extracted items."""
+        items_count = len(items)
+        self._log_info(f"Performing LLM-based aggregation for {items_count} {data_type}.", context)
+
+        # --- Get Config Details ---
+        target_definition = context.get_target_definition()
+        base_aggregator_instructions = context.get_workflow_instructions(self.role) or f"Aggregate the provided {data_type} by merging duplicates."
+        item_properties_schema = self._get_item_properties_schema(context, assessment_type)
         
-        # Define schema for deduplicated issues
-        json_schema = {
+        # --- Define LLM Output Schema ---
+        # Get friendly name for better prompting
+        item_name = data_type.rstrip('s')  # Remove trailing 's' if present
+        
+        # Describes the structure of the *aggregated* list items
+        aggregated_list_key = f"aggregated_{data_type}"
+        aggregated_item_schema = {
             "type": "object",
             "properties": {
-                "deduplicated_issues": {
+                **(item_properties_schema or {}),  # Include original properties if known
+                # Add fields to track merging
+                "merged_item_ids": {
                     "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "description": {"type": "string"},
-                            "severity": {"type": "string"},
-                            "category": {"type": "string"},
-                            "source_chunks": {
-                                "type": "array",
-                                "items": {"type": "integer"}
-                            },
-                            "related_issue_ids": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            }
-                        },
-                        "required": ["description", "severity", "category", "source_chunks"]
-                    }
+                    "items": {"type": "string"},
+                    "description": "Original IDs of all raw items combined into this aggregated item."
                 }
             },
-            "required": ["deduplicated_issues"]
+            "required": ["merged_item_ids"]  # At minimum require tracking which items were merged
         }
         
-        # Get assessment config info
-        assessment_config = context.assessment_config
-        issue_definition = assessment_config.get("issue_definition", {})
-        severity_levels = issue_definition.get("severity_levels", {})
-        categories = issue_definition.get("categories", [])
-        
-        # Create a prompt for deduplication
-        prompt = f"""
-        You are an expert information aggregator for an AI document analysis system.
-        
-        I have extracted {len(issues)} issues from different chunks of a document.
-        Some of these might be duplicates or refer to the same problem from different parts of the document.
-        
-        {agent_instructions}
-        
-        Please deduplicate these issues by:
-        1. Combining items that refer to the same underlying problem
-        2. Using the most complete description
-        3. Using the highest severity rating when there's a conflict
-        4. Combining category information
-        5. Tracking which chunks each issue came from
-        
-        Severity Levels:
-        {json.dumps(severity_levels, indent=2)}
-        
-        Categories:
-        {json.dumps(categories, indent=2)}
-        
-        Here are the issues:
-        ```
-        {json.dumps(issues, indent=2)}
-        ```
-        
-        Create a deduplicated list of issues, where each item includes:
-        - id: Preserve the original ID of the main issue you're keeping
-        - description: The most complete description of the issue
-        - severity: Severity level (use the highest one mentioned)
-        - category: Category (use the most specific one)
-        - source_chunks: List of chunk indices where this issue was found
-        - related_issue_ids: List of IDs of the issues that were merged into this one
-        
-        Format your response as a structured JSON object with a "deduplicated_issues" array.
-        """
-        
-        # Generate deduplicated issues
-        try:
-            result = await self.generate_structured_output(
-                prompt=prompt,
-                json_schema=json_schema,
-                max_tokens=3000,
-                temperature=0.3
-            )
-            
-            # Get the deduplicated issues
-            deduplicated = result.get("deduplicated_issues", [])
-            
-            # Log the results
-            self.log_info(context, f"Deduplicated {len(issues)} issues into {len(deduplicated)} unique issues")
-            
-            return deduplicated
-            
-        except Exception as e:
-            # If deduplication fails, log the error
-            self.log_error(context, f"Error deduplicating issues: {str(e)}")
-            
-            # Create a basic deduplication by description
-            seen_descriptions = {}
-            deduplicated = []
-            
-            for item in issues:
-                desc = item.get("description", "").lower()
-                if desc and desc not in seen_descriptions:
-                    seen_descriptions[desc] = item
-                    if "source_chunks" not in item:
-                        item["source_chunks"] = [item.get("source_chunks", [])]
-                    deduplicated.append(item)
-                elif desc:
-                    # Add this source chunk to the existing item
-                    source_chunks = item.get("source_chunks", [])
-                    if source_chunks and isinstance(source_chunks, list):
-                        if "source_chunks" not in seen_descriptions[desc]:
-                            seen_descriptions[desc]["source_chunks"] = []
-                        seen_descriptions[desc]["source_chunks"].extend(source_chunks)
-            
-            return list(seen_descriptions.values())
-    
-    async def _synthesize_key_points(self, 
-                                    context: ProcessingContext,
-                                    key_points: List[Dict[str, Any]],
-                                    agent_instructions: str) -> List[Dict[str, Any]]:
-        """
-        Synthesize key points into a concise list.
-        
-        Args:
-            context: The processing context
-            key_points: List of key points to synthesize
-            agent_instructions: Instructions from the assessment config
-            
-        Returns:
-            List of synthesized key points
-        """
-        if not key_points:
-            return []
-        
-        if len(key_points) <= 5:
-            return key_points
-        
-        # Create a list of point texts
-        point_texts = []
-        for point in key_points:
-            if isinstance(point, dict):
-                point_texts.append(point.get("text", ""))
-            else:
-                point_texts.append(str(point))
-        
-        # Define schema for synthesized key points
-        json_schema = {
+        # Add key required fields based on assessment type
+        if assessment_type == "extract": 
+            aggregated_item_schema["required"].extend(["description", "owner"])
+        elif assessment_type == "assess": 
+            aggregated_item_schema["required"].extend(["title", "description", "severity"])
+        elif assessment_type == "distill": 
+            aggregated_item_schema["required"].extend(["text", "topic"])
+        elif assessment_type == "analyze": 
+            aggregated_item_schema["required"].extend(["dimension", "criteria", "evidence_text"])
+
+        llm_output_schema = {
             "type": "object",
             "properties": {
-                "synthesized_points": {
+                aggregated_list_key: {
                     "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "text": {"type": "string"},
-                            "importance": {"type": "string"},
-                            "related_point_indices": {
-                                "type": "array",
-                                "items": {"type": "integer"}
-                            }
-                        },
-                        "required": ["text", "importance"]
-                    }
+                    "description": f"Final list of deduplicated and intelligently merged {item_name} items.",
+                    "items": aggregated_item_schema
                 }
             },
-            "required": ["synthesized_points"]
+            "required": [aggregated_list_key]
         }
+
+        # --- Construct Prompt ---
+        merge_rules = "Merge Rules:\n"
+        merge_rules += "- Intelligently combine descriptions/text from merged items to create a comprehensive summary.\n"
         
-        # Create a prompt for synthesizing key points
+        if assessment_type == "assess": 
+            merge_rules += "- Use the HIGHEST severity rating.\n- Preserve the most specific category.\n"
+        if assessment_type == "extract": 
+            merge_rules += "- Preserve the earliest due_date.\n- Consolidate owners; list multiple if conflicting and necessary.\n"
+        
+        merge_rules += "- The 'merged_item_ids' list MUST contain the original 'id' field from ALL input items that were combined.\n"
+        merge_rules += "- Ensure each output item contains all properties defined in its schema."
+
+        # Prepare items for prompt (limiting size)
+        input_items_json = json.dumps(items, indent=2, default=str)
+        max_prompt_items_len = self.options.get("aggregator_max_input_len", 10000)
+        if len(input_items_json) > max_prompt_items_len:
+            self._log_warning(f"Input items JSON length ({len(input_items_json)}) exceeds limit ({max_prompt_items_len}). Truncating for prompt.", context)
+            input_items_json = input_items_json[:max_prompt_items_len] + "\n...[Input Truncated]...\n]}"
+
         prompt = f"""
-        You are an expert information synthesizer for an AI document analysis system.
-        
-        I have extracted {len(key_points)} key points from different chunks of a document.
-        Your task is to combine related points and create a concise list of the most important insights.
-        
-        {agent_instructions}
-        
-        Here are all the extracted key points:
-        ```
-        {json.dumps(point_texts, indent=2)}
-        ```
-        
-        Please synthesize these into 5-10 comprehensive key points by:
-        1. Combining related points into more comprehensive insights
-        2. Preserving the most important information
-        3. Eliminating redundancies
-        4. Creating a concise yet complete list of the document's key insights
-        
-        For each synthesized point, include:
-        - text: The synthesized key point text (comprehensive and clear)
-        - importance: A rating of importance (high, medium, low)
-        - related_point_indices: Indices of the original points that were combined into this one
-        
-        Format your response as a structured JSON object with a "synthesized_points" array.
-        """
-        
-        # Generate synthesized key points
+You are an expert AI 'Aggregator' agent specializing in consolidating extracted information. Your goal is to process the provided list of '{item_name}' items, identify duplicates or items describing the same core concept, and merge them into a single, comprehensive entry.
+
+**Base Instructions:** {base_aggregator_instructions}
+
+**Input Item Schema (Properties the extractor found):**
+```json
+{json.dumps(item_properties_schema or {'info':'Schema not determined, rely on item content.'}, indent=2)}
+```
+
+{merge_rules}
+
+**Input Items (List of {items_count} raw {item_name} items):**
+```json
+{input_items_json}
+```
+
+**Your Task:**
+Analyze the input items. Identify duplicates/overlaps based on semantic meaning. Merge them according to the rules. Produce a final, consolidated list of unique, merged {item_name} items.
+
+**Output Format:**
+Respond only with a valid JSON object matching this schema:
+```json
+{json.dumps(llm_output_schema, indent=2)}
+```
+Ensure the output is a single JSON object with the key '{aggregated_list_key}' containing the array of aggregated items.
+Pay close attention to correctly populating 'merged_item_ids' to maintain traceability.
+"""
+
+        # --- LLM Call ---
         try:
-            result = await self.generate_structured_output(
+            # Estimate max tokens needed - can be large if merging complex descriptions
+            output_token_estimate = items_count * 150  # Rough estimate per output item
+            # Ensure reasonable minimum and apply cap from options
+            max_tokens = min(max(2000, output_token_estimate), self.options.get("aggregator_token_limit", 4000))
+
+            self._log_debug(f"Calling LLM for aggregation with max_tokens={max_tokens}", context)
+
+            structured_response = await self._generate_structured(
                 prompt=prompt,
-                json_schema=json_schema,
-                max_tokens=2000,
-                temperature=0.4
+                output_schema=llm_output_schema,
+                context=context,
+                temperature=self.options.get("aggregator_temperature", 0.15),
+                max_tokens=max_tokens
             )
-            
-            # Get the synthesized points
-            synthesized = result.get("synthesized_points", [])
-            
-            # Log the results
-            self.log_info(context, f"Synthesized {len(key_points)} key points into {len(synthesized)} points")
-            
-            # Convert to the expected format
-            formatted_points = []
-            for point in synthesized:
-                formatted_points.append({
-                    "text": point.get("text", ""),
-                    "importance": point.get("importance", "medium"),
-                    "related_point_indices": point.get("related_point_indices", []),
-                    "source_chunks": self._gather_source_chunks(key_points, point.get("related_point_indices", []))
-                })
-            
-            return formatted_points
-            
+
+            # --- Process LLM Response ---
+            aggregated_list = structured_response.get(aggregated_list_key, [])
+
+            # Validate the primary list structure
+            if not isinstance(aggregated_list, list):
+                self._log_error(f"LLM aggregation response under '{aggregated_list_key}' was not a list. Type: {type(aggregated_list)}", context)
+                # Attempt to recover
+                if isinstance(aggregated_list, dict) and isinstance(aggregated_list.get(aggregated_list_key), list):
+                    aggregated_list = aggregated_list[aggregated_list_key]
+                    self._log_warning(f"Recovered list found nested within response dictionary.", context)
+                else:
+                    # If still not a list, raise error
+                    raise ValueError(f"LLM did not return a valid list structure under '{aggregated_list_key}'.")
+
+            # --- Basic Validation of Aggregated Items ---
+            valid_items = []
+            required_fields = aggregated_item_schema.get("required", [])
+            self._log_debug(f"Validating {len(aggregated_list)} aggregated items against required fields: {required_fields}", context)
+
+            for idx, agg_item in enumerate(aggregated_list):
+                if not isinstance(agg_item, dict):
+                    self._log_warning(f"Aggregated item at index {idx} is not a dictionary, skipping.", context)
+                    continue  # Skip non-dict items
+
+                # Check for required fields defined in the schema for each item
+                missing_req = [req for req in required_fields if req not in agg_item]
+                if missing_req:
+                    # Log clearly which item is missing fields
+                    item_id_for_log = f"index_{idx}"
+                    if "merged_item_ids" in agg_item and agg_item["merged_item_ids"]:
+                        item_id_for_log = f"merged:{len(agg_item['merged_item_ids'])} items"
+                    
+                    self._log_warning(f"Aggregated item ({item_id_for_log}) is missing required fields: {missing_req}. Keeping item but flagging.", context)
+                    agg_item["_validation_warnings"] = f"Missing required fields: {missing_req}"  # Flag item
+                
+                # Add to valid items list
+                valid_items.append(agg_item)
+
+            self._log_info(f"LLM aggregation successful. Produced {len(valid_items)} aggregated {item_name} items.", context)
+            return valid_items
+
         except Exception as e:
-            # If synthesis fails, log the error
-            self.log_error(context, f"Error synthesizing key points: {str(e)}")
-            
-            # Return the original points if we have a reasonable number, or just the first 10
-            if len(key_points) <= 10:
-                return key_points
-            else:
-                return key_points[:10]
-    
-    def _gather_source_chunks(self, key_points: List[Dict[str, Any]], indices: List[int]) -> List[int]:
-        """
-        Gather source chunks from related key points.
-        
-        Args:
-            key_points: List of key points
-            indices: Indices of related key points
-            
-        Returns:
-            List of source chunk indices
-        """
-        source_chunks = set()
-        
-        for idx in indices:
-            if 0 <= idx < len(key_points):
-                if isinstance(key_points[idx], dict):
-                    chunks = key_points[idx].get("source_chunks", [])
-                    if chunks and isinstance(chunks, list):
-                        source_chunks.update(chunks)
-        
-        return list(source_chunks)
+            # Catch errors from LLM call or subsequent processing/validation
+            self._log_error(f"LLM-based aggregation failed: {e}", context, exc_info=True)
+            # Re-raise a specific error type to indicate aggregation failure
+            raise RuntimeError(f"Aggregation for {data_type} failed: {str(e)}") from e

@@ -1,6 +1,6 @@
 {
-    "crew_type": "insights",
-    "description": "Performs SWOT analysis (Strengths, Weaknesses, Opportunities, Threats) on meeting transcripts with client context",
+    "crew_type": "custom_insights",
+    "description": "Template for custom insights assessment - perform SWOT analysis on documents with client context",
     
     "insight_definition": {
       "description": "Meaningful observations about strengths, weaknesses, opportunities, and threats derived from the discussion",
@@ -24,24 +24,6 @@
           "description": "Plans the SWOT analysis approach with client context in mind",
           "primary_task": "Create tailored instructions for identifying SWOT elements relevant to client context",
           "instructions": "Study the document and client context to identify the most relevant insights. Create specific extraction and evaluation instructions that focus on SWOT elements particularly relevant to this client's situation."
-        },
-        "extractor": {
-          "description": "Identifies SWOT elements from document chunks",
-          "primary_task": "Extract statements that indicate strengths, weaknesses, opportunities, or threats",
-          "output_schema": {
-            "type": "SWOT category (strength, weakness, opportunity, threat)",
-            "description": "Description of the insight",
-            "impact": "Initial impact assessment",
-            "confidence": "Confidence level in this assessment",
-            "context": "Relevant context from the document"
-          },
-          "instructions": "Extract statements that indicate strengths, weaknesses, opportunities, or threats. Use the client context to guide your identification - what might be a strength for one organization could be a weakness for another. Look for explicit statements as well as implied insights."
-        },
-        "aggregator": {
-          "description": "Combines and organizes SWOT elements",
-          "primary_task": "Consolidate similar insights and organize by SWOT category",
-          "instructions": "Combine similar insights while preserving nuance and detail. Organize insights into proper SWOT categories. Ensure insights are aligned with the client context provided."
-        },
         "evaluator": {
           "description": "Assesses impact and relevance of SWOT elements",
           "primary_task": "Evaluate the impact and strategic importance of each insight given client context",
@@ -65,53 +47,20 @@
           "instructions": "Review the SWOT analysis for balance, accuracy, and strategic relevance. Ensure each insight is properly categorized and provides value. Check that the analysis is aligned with the client context and captures the most important insights from the discussion."
         }
       },
-      "stage_weights": {
-        "document_analysis": 0.05,
-        "chunking": 0.05,
-        "planning": 0.15,
-        "extraction": 0.25,
-        "aggregation": 0.15,
-        "evaluation": 0.20,
-        "formatting": 0.10,
-        "review": 0.05
-      }
-    },
-    
-    "user_options": {
-      "detail_levels": {
-        "essential": "Focus only on high-impact insights",
-        "standard": "Include high and medium impact insights",
-        "comprehensive": "Include all insights regardless of impact level"
-      },
-      "client_context": {
-        "required": true,
-        "description": "Background information about the client to ground the analysis",
-        "fields": {
-          "client_name": "Name of the organization or client",
-          "industry": "Client's industry or sector",
-          "size": "Organization size (revenue, employees)",
-          "key_challenges": "Known challenges or issues",
-          "objectives": "Client's goals or objectives for this engagement",
-          "current_systems": "Current technology or process landscape",
-          "additional_context": "Any other relevant background information"
-        }
-      }
-    },
-    
-    "report_format": {
-      "sections": [
-        "Executive Summary",
-        "Strengths",
-        "Weaknesses",
-        "Opportunities",
-        "Threats",
-        "Strategic Recommendations"
-      ],
-      "insight_presentation": {
-        "description": "Clear description of the insight",
-        "impact": "Visual indicator of impact level",
-        "evidence": "Supporting evidence from the transcript",
-        "strategic_implication": "What this means for the client's strategy"
-      }
-    }
-  }
+        "extractor": {
+          "description": "Identifies SWOT elements from document chunks",
+          "primary_task": "Extract statements that indicate strengths, weaknesses, opportunities, or threats",
+          "output_schema": {
+            "type": "SWOT category (strength, weakness, opportunity, threat)",
+            "description": "Description of the insight",
+            "impact": "Initial impact assessment",
+            "confidence": "Confidence level in this assessment",
+            "context": "Relevant context from the document"
+          },
+          "instructions": "Extract statements that indicate strengths, weaknesses, opportunities, or threats. Use the client context to guide your identification - what might be a strength for one organization could be a weakness for another. Look for explicit statements as well as implied insights."
+        },
+        "aggregator": {
+          "description": "Combines and organizes SWOT elements",
+          "primary_task": "Consolidate similar insights and organize by SWOT category",
+          "instructions": "Combine similar insights while preserving nuance and detail. Organize insights into proper SWOT categories. Ensure insights are aligned with the client context provided."
+        },

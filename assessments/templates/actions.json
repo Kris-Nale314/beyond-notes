@@ -1,9 +1,9 @@
 {
-    "crew_type": "action_items",
-    "description": "Identifies concrete follow-up tasks and commitments from meeting transcripts",
+    "crew_type": "custom_action_items",
+    "description": "Template for custom action items assessment - extract concrete follow-up tasks from documents",
     
     "action_item_definition": {
-      "description": "A specific, actionable task that requires follow-up after the meeting, typically with an owner and timeframe",
+      "description": "A specific, actionable task that requires follow-up, typically with an owner and timeframe",
       "priority_levels": {
         "critical": "Must be completed urgently",
         "high": "Important task requiring prompt attention",
@@ -87,6 +87,20 @@
         "by_priority": "Group action items by priority",
         "by_due_date": "Group action items by timeline",
         "sequential": "List action items in the order they appeared"
+      },
+      "customizations": {
+        "priority_levels": {
+          "description": "Customize priority level definitions",
+          "required": false
+        },
+        "status_types": {
+          "description": "Customize status type options",
+          "required": false
+        },
+        "evaluation_criteria": {
+          "description": "Customize evaluation criteria",
+          "required": false
+        }
       }
     },
     
