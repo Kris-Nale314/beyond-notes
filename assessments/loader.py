@@ -527,6 +527,14 @@ class AssessmentLoader:
         # self.create_default_types()
         self._log_loader_status()
 
+    def get_standard_assessment_type_names(self) -> List[str]:
+        """
+        Returns a sorted list of the standard, built-in assessment type names
+        (e.g., ['analyze', 'assess', 'distill', 'extract']).
+        These correspond to the keys used for output directories.
+        """
+        return sorted(list(self.standard_types.keys()))
+
 # Example usage
 if __name__ == "__main__":
     print("--- Running AssessmentLoader Standalone Test ---")

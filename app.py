@@ -1,4 +1,4 @@
-# app.py - Revised Version
+# app.py - Revised Version (Incorporating loader.py knowledge)
 import os
 import sys
 import streamlit as st
@@ -55,14 +55,16 @@ def initialize_app():
         # Initialize assessment loader if not already in session state
         if "assessment_loader" not in st.session_state:
             logger.info("Initializing assessment loader")
-            loader = AssessmentLoader() # Assumes constructor requires no args
+            # Assuming AssessmentLoader can be initialized without args here
+            # Or pass base_dir if needed: AssessmentLoader(base_dir=AppPaths.get_assessments_dir())
+            loader = AssessmentLoader()
 
             # Create default types if needed (for first-time run)
             # Use Path object for checking existence
-            types_dir = Path(AppPaths.get_types_dir())
+            types_dir = Path(AppPaths.get_types_dir()) # Use AppPaths to get dir
             if not any(types_dir.glob("*.json")):
                 logger.info("Creating default assessment types as none were found.")
-                loader.create_default_types()
+                loader.create_default_types() # Assumes _get_default_config_content is implemented
                 loader.reload() # Reload after creating defaults
 
             st.session_state.assessment_loader = loader
@@ -88,7 +90,7 @@ def initialize_app():
     except Exception as e:
         logger.error(f"Error during application initialization: {e}", exc_info=True)
         st.error(f"Application Initialization Failed: {e}. Please check the logs.")
-        # Depending on severity, you might call st.stop() here
+        st.stop() # Stop if initialization fails critically
 
 def show_welcome_page():
     """Display the main landing page content."""
@@ -108,8 +110,6 @@ def show_welcome_page():
             "OpenAI API key not found. Please set the OPENAI_API_KEY environment variable "
             "or add it to your `.env` file to use Beyond Notes."
         )
-        # Optionally disable buttons or show limited functionality if key is missing
-        # return # Or just show the warning and continue
 
     # Main capabilities section
     st.subheader("Core Capabilities")
@@ -180,11 +180,11 @@ def show_welcome_page():
     if "assessment_loader" in st.session_state:
         assessment_loader = st.session_state.assessment_loader
         try:
-            # --- !!! Assumption: Replace 'get_available_type_names' with your actual method name !!! ---
-            available_types = assessment_loader.get_available_type_names()
-            logger.debug(f"Dynamically loaded assessment types for recent files: {available_types}")
+            # --- Use the new method from AssessmentLoader ---
+            standard_types = assessment_loader.get_standard_assessment_type_names()
+            logger.debug(f"Dynamically loaded standard assessment types for recent files: {standard_types}")
 
-            for assessment_type in available_types: # Use dynamic list
+            for assessment_type in standard_types: # Use dynamic list
                 output_dir = AppPaths.get_assessment_output_dir(assessment_type)
                 if output_dir.exists():
                     # Scan for markdown reports, adjust glob pattern if needed
@@ -199,14 +199,18 @@ def show_welcome_page():
                             })
                         except OSError as e:
                              logger.warning(f"Could not stat file {file_path}: {e}")
+                # else: # Optional: log if output dir doesn't exist
+                #     logger.debug(f"Output directory not found for type '{assessment_type}': {output_dir}")
 
 
         except AttributeError:
-            logger.error("Failed to get assessment types dynamically. AssessmentLoader might be missing the expected method ('get_available_type_names'). Falling back to hardcoded list.")
+             # This error means the method doesn't exist on the loaded object
+            logger.error("Failed to get assessment types dynamically. AssessmentLoader instance in session state might be missing the required method ('get_standard_assessment_type_names'). Please add the method to assessments/loader.py. Falling back to hardcoded list for now.")
+            st.warning("Could not dynamically load assessment types. Recent analyses list might be incomplete.")
             # Fallback to hardcoded list if dynamic loading fails
-            available_types = ["distill", "extract", "assess", "analyze"]
+            standard_types = ["distill", "extract", "assess", "analyze"]
              # Duplicate the scanning logic here for the fallback or refactor into a helper function
-            for assessment_type in available_types:
+            for assessment_type in standard_types:
                 output_dir = AppPaths.get_assessment_output_dir(assessment_type)
                 if output_dir.exists():
                     for file_path in output_dir.glob(f"{assessment_type}_report_*.md"):
@@ -224,29 +228,28 @@ def show_welcome_page():
             st.error("Could not load recent analyses due to an error.")
 
     else:
-        st.info("Assessment loader not available in session state.")
+        # This case means initialize_app() likely failed or didn't run correctly
+        st.error("Assessment loader not available in session state. Application may not have initialized correctly.")
 
 
     # Sort by modification time (most recent first)
     recent_files.sort(key=lambda x: x["modified"], reverse=True)
 
     if recent_files:
-        st.markdown("Click on a past analysis to view the report (functionality to be added).") # Placeholder action
+        st.markdown("_Past analyses (display only for now):_") # Clarify functionality
         # Display recent files (up to 5)
         for i, file_info in enumerate(recent_files[:5]):
-            col1, col2, col3 = st.columns([3, 2, 1])
+            col1, col2, col3 = st.columns([3, 1, 1]) # Adjusted column ratios
             with col1:
-                # Make filename clickable (if view page exists)
-                 # st.page_link("pages/04_ViewReport.py", label=f"{file_info['filename']}", icon="📄", query_params={"report_path": str(file_info['path'])})
-                 st.write(f"📄 {file_info['filename']}") # Placeholder if view page doesn't exist yet
+                 st.markdown(f"📄 **{file_info['filename']}**") # Make filename bold
             with col2:
-                st.caption(f"Type: {file_info['type'].title()}")
+                st.caption(f"Type: `{file_info['type']}`") # Use monospace for type
             with col3:
-                st.caption(f"{file_info['modified'].strftime('%Y-%m-%d %H:%M')}")
+                st.caption(f"{file_info['modified'].strftime('%b %d, %H:%M')}") # Shorter date format
 
             if i < 4 and i < len(recent_files) -1 : # Ensure divider doesn't appear after the last item shown
                 st.divider()
-    else:
+    elif "assessment_loader" in st.session_state: # Only show if loader is available
         st.info("No analyses have been performed yet. Get started by analyzing a document!")
 
 # Main app execution
@@ -255,7 +258,13 @@ def main():
     initialize_app()
 
     # Display the welcome page content
-    show_welcome_page()
+    # Only display if initialization seems okay (e.g., loader exists)
+    if "assessment_loader" in st.session_state:
+        show_welcome_page()
+    else:
+        # Display error message if initialization failed earlier
+        st.error("Application failed to initialize properly. Please check the logs or environment configuration.")
+
 
 if __name__ == "__main__":
     main()
