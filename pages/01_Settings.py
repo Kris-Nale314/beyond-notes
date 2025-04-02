@@ -323,16 +323,20 @@ def display_config_details(config):
         created_date = metadata.get("created_date", "Unknown")
         modified_date = metadata.get("last_modified_date", "Unknown")
         
-        with st.expander("Metadata", expanded=False):
-            if is_template and "base_assessment_id" in metadata:
-                st.markdown(f"**Base Configuration:** {metadata.get('base_assessment_id')}")
-            
-            st.markdown(f"**Created:** {created_date}")
-            st.markdown(f"**Last Modified:** {modified_date}")
+        st.markdown("### Metadata")
+        if is_template and "base_assessment_id" in metadata:
+            st.markdown(f"**Base Configuration:** {metadata.get('base_assessment_id')}")
+        
+        st.markdown(f"**Created:** {created_date}")
+        st.markdown(f"**Last Modified:** {modified_date}")
     
-    # Configuration sections
-    if "workflow" in config:
-        with st.expander("Workflow Configuration", expanded=False):
+    # Configuration sections - Fix nested expanders issue by using tabs instead
+    st.markdown("### Configuration Sections")
+    config_tabs = st.tabs(["Workflow", "Definition", "Schema", "Criteria", "Options", "Full JSON"])
+    
+    # Workflow tab
+    with config_tabs[0]:
+        if "workflow" in config:
             # Display enabled stages
             enabled_stages = config.get("workflow", {}).get("enabled_stages", [])
             st.markdown("**Enabled Stages:**")
@@ -340,43 +344,56 @@ def display_config_details(config):
                 st.markdown(f"- {stage.replace('_', ' ').title()}")
             
             # Display agent instructions if available
+            st.markdown("**Agent Instructions:**")
             agent_instructions = config.get("workflow", {}).get("agent_instructions", {})
             if agent_instructions:
-                st.markdown("**Agent Instructions:**")
                 for agent, instruction in agent_instructions.items():
-                    with st.expander(f"{agent.title()} Agent", expanded=False):
-                        st.markdown(instruction)
+                    st.markdown(f"**{agent.title()} Agent:**")
+                    st.markdown(instruction)
     
     # Main definition section based on assessment type
-    definition_key = {
-        "distill": "output_definition",
-        "extract": "entity_definition",
-        "assess": "entity_definition",
-        "analyze": "framework_definition"
-    }.get(assessment_type)
-    
-    if definition_key and definition_key in config:
-        with st.expander(f"{definition_key.replace('_', ' ').title()}", expanded=True):
+    with config_tabs[1]:
+        definition_key = {
+            "distill": "output_definition",
+            "extract": "entity_definition",
+            "assess": "entity_definition",
+            "analyze": "framework_definition"
+        }.get(assessment_type)
+        
+        if definition_key and definition_key in config:
+            st.markdown(f"**{definition_key.replace('_', ' ').title()}:**")
             definition = config.get(definition_key, {})
             st.json(definition)
+        else:
+            st.info(f"No {definition_key} definition found.")
     
     # Output schema
-    if "output_schema" in config:
-        with st.expander("Output Schema", expanded=False):
+    with config_tabs[2]:
+        if "output_schema" in config:
+            st.markdown("**Output Schema:**")
             st.json(config.get("output_schema", {}))
+        else:
+            st.info("No output schema defined.")
     
     # Extraction criteria
-    if "extraction_criteria" in config:
-        with st.expander("Extraction Criteria", expanded=False):
+    with config_tabs[3]:
+        if "extraction_criteria" in config:
+            st.markdown("**Extraction Criteria:**")
             st.json(config.get("extraction_criteria", {}))
+        else:
+            st.info("No extraction criteria defined.")
     
     # User options
-    if "user_options" in config:
-        with st.expander("User Options", expanded=False):
+    with config_tabs[4]:
+        if "user_options" in config:
+            st.markdown("**User Options:**")
             st.json(config.get("user_options", {}))
+        else:
+            st.info("No user options defined.")
     
     # View full JSON
-    with st.expander("Full Configuration JSON", expanded=False):
+    with config_tabs[5]:
+        st.markdown("**Full Configuration JSON:**")
         st.json(config)
 
 def display_create_template_form(base_id):

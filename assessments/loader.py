@@ -4,9 +4,11 @@ import json
 import logging
 import shutil
 import copy
+import time # Keep for potential timing info if needed
+import re
 from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -337,7 +339,7 @@ class AssessmentLoader:
             template_config.setdefault("metadata", {})
             template_config["metadata"]["is_template"] = True
             template_config["metadata"]["base_assessment_id"] = base_assessment_id
-            now_iso = datetime.now(datetime.timezone.utc).isoformat() # Use timezone-aware UTC
+            now_iso = datetime.now(timezone.utc).isoformat()  # Correct usage
             template_config["metadata"]["created_date"] = now_iso
             template_config["metadata"]["last_modified_date"] = now_iso
             template_config["metadata"]["created_by"] = "User"
