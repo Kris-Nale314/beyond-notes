@@ -5,6 +5,8 @@ import copy
 import time # Keep for potential timing info if needed
 import uuid # Keep if generating IDs within evaluator (unlikely now)
 from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime, timezone
+
 
 # Import base class and context/LLM types
 from .base import BaseAgent

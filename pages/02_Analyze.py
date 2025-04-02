@@ -1,467 +1,522 @@
-# pages/02_Analyze.py
-import os
-import sys
-import asyncio
+# pages/02_Assess.py
 import streamlit as st
-import logging
-import json
+import os
+import asyncio
 import time
+import json
+import logging
 from pathlib import Path
-import matplotlib.pyplot as plt
-import copy
-from typing import Dict, Any, Optional, Tuple, List
-from utils.result_accessor import get_assessment_data, get_item_count, debug_result_structure
-from utils.formatting import format_assessment_report
+from datetime import datetime
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("beyond-notes-assess")
 
-# --- Project Setup ---
-try:
-    APP_ROOT = Path(__file__).parent.parent
-    if str(APP_ROOT) not in sys.path:
-        sys.path.insert(0, str(APP_ROOT))
-    from core.models.document import Document
-    from core.orchestrator import Orchestrator
-    from assessments.loader import AssessmentLoader # Uses the NEW loader
-    from utils.paths import AppPaths
-    from utils.formatting import (
-        format_assessment_report,
-        display_pipeline_progress,
-        save_result_to_output
-    )
-except ImportError as e:
-     st.error(f"Failed to import necessary modules. Ensure project structure is correct and requirements are installed. Error: {e}")
-     st.stop()
+# Import components
+from core.models.document import Document
+from core.orchestrator import Orchestrator
+from assessments.loader import AssessmentLoader
+from utils.paths import AppPaths
+from utils.formatting import format_assessment_report
 
-# --- Page Configuration ---
+# Ensure directories exist
+AppPaths.ensure_dirs()
+
+# Page config
 st.set_page_config(
-    page_title="Analyze Document - Beyond Notes",
-    page_icon="🔍",
+    page_title="Beyond Notes - Document Assessment",
+    page_icon="📝",
     layout="wide",
-    initial_sidebar_state="expanded"
 )
 
-# --- Async Processing Function ---
-# run_analysis_pipeline function remains the same as the previous version
-async def run_analysis_pipeline(document: Document, assessment_id: str, options: Dict[str, Any]):
-    """
-    Initializes and runs the Orchestrator for the given document and settings.
+# Define accent colors
+PRIMARY_COLOR = "#4CAF50"  # Green
+SECONDARY_COLOR = "#2196F3"  # Blue
+ACCENT_COLOR = "#FF9800"  # Orange
+ERROR_COLOR = "#F44336"  # Red
 
-    Args:
-        document: The Document object to analyze.
-        assessment_id: The ID of the assessment configuration to use.
-        options: Runtime options (model, chunking, user selections).
+# CSS to customize the appearance
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: 700;
+        margin-bottom: 1rem;
+    }
+    .section-header {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin-top: 1rem;
+        margin-bottom: 0.5rem;
+    }
+    .info-box {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    .accent-border {
+        border-left: 4px solid #FF9800;
+        padding-left: 1rem;
+    }
+    .progress-container {
+        margin-top: 2rem;
+        margin-bottom: 2rem;
+    }
+    .results-container {
+        margin-top: 2rem;
+    }
+    .stage-progress {
+        margin-bottom: 0.5rem;
+        padding: 0.5rem;
+        border-radius: 0.3rem;
+        background-color: rgba(255, 255, 255, 0.05);
+    }
+    .completed-stage {
+        border-left: 4px solid #4CAF50;
+    }
+    .running-stage {
+        border-left: 4px solid #2196F3;
+    }
+    .failed-stage {
+        border-left: 4px solid #F44336;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-    Returns:
-        The analysis result dictionary, or None if an error occurred.
-    """
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        st.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
-        logger.error("OPENAI_API_KEY not found in environment.")
-        return None
+def initialize_assessment_page():
+    """Initialize the session state variables for the assessment page."""
+    if "document_loaded" not in st.session_state:
+        st.session_state.document_loaded = False
+    
+    if "processing_started" not in st.session_state:
+        st.session_state.processing_started = False
+    
+    if "processing_complete" not in st.session_state:
+        st.session_state.processing_complete = False
+    
+    if "current_progress" not in st.session_state:
+        st.session_state.current_progress = 0.0
+    
+    if "progress_message" not in st.session_state:
+        st.session_state.progress_message = "Not started"
+    
+    if "assessment_result" not in st.session_state:
+        st.session_state.assessment_result = None
+    
+    # Set default assessment type from main app if available
+    if "default_assessment" in st.session_state and "selected_assessment_type" not in st.session_state:
+        st.session_state.selected_assessment_type = st.session_state.default_assessment
 
-    orchestrator = None # Initialize to None
+def load_assessment_configs():
+    """Load assessment configurations."""
     try:
-        # Store orchestrator in session state IF needed by callback immediately
-        # Otherwise, initialize locally first
-        orchestrator = Orchestrator(
-            assessment_id=assessment_id,
-            options=options,
-            api_key=api_key
-        )
-        st.session_state.orchestrator_instance = orchestrator # Store for callback access if needed
-    except ValueError as e:
-         st.error(f"Error initializing assessment '{assessment_id}': {e}. Please check configuration.")
-         logger.error(f"Orchestrator init failed for '{assessment_id}': {e}", exc_info=True)
-         return None
+        # Load assessment configurations
+        assessment_loader = AssessmentLoader()
+        configs = assessment_loader.get_assessment_configs_list()
+        if not configs:
+            st.error("No assessment configurations found. Please check your setup.")
+            return None
+        return configs
     except Exception as e:
-        st.error(f"An unexpected error occurred during orchestrator setup: {e}")
-        logger.error(f"Unexpected orchestrator init error: {e}", exc_info=True)
+        st.error(f"Error loading assessment configurations: {str(e)}")
+        logger.error(f"Error loading assessment configurations: {e}", exc_info=True)
         return None
 
-    progress_container = st.container()
-    with progress_container:
-        status_text = st.empty()
-        progress_bar = st.progress(0.0)
-        pipeline_status_display = st.empty()
+def load_document(file_object):
+    """Load document from uploaded file."""
+    try:
+        # Save uploaded file temporarily
+        temp_dir = AppPaths.get_temp_path("uploads")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_file_path = temp_dir / file_object.name
+        
+        with open(temp_file_path, "wb") as f:
+            f.write(file_object.getvalue())
+        
+        # Create document from file
+        document = Document.from_file(temp_file_path)
+        
+        # Log successful document loading
+        logger.info(f"Successfully loaded document: {document.filename}, {document.word_count} words")
+        
+        return document, temp_file_path
+    except Exception as e:
+        st.error(f"Error loading document: {str(e)}")
+        logger.error(f"Error loading document: {e}", exc_info=True)
+        return None, None
 
-    start_time = time.time()
+def progress_callback(progress, data):
+    """Callback function for progress updates from the orchestrator."""
+    if isinstance(data, dict):
+        st.session_state.current_progress = progress
+        st.session_state.progress_message = data.get("message", "Processing...")
+        st.session_state.current_stage = data.get("current_stage")
+        st.session_state.stages_info = data.get("stages", {})
+    else:
+        # Simple string message
+        st.session_state.current_progress = progress
+        st.session_state.progress_message = data
 
-    def update_progress_display(progress: float, message: str):
-        try:
-            st.session_state.last_progress = progress # Store progress for potential error state
-            progress_bar.progress(min(progress, 1.0))
-            status_text.text(message)
-            # Use the stored orchestrator instance if available
-            orch = st.session_state.get('orchestrator_instance')
-            if orch:
-                 progress_data = orch.get_progress()
-                 pipeline_status_display.markdown(
-                      display_pipeline_progress(progress_data.get("stages", {})),
-                      unsafe_allow_html=True
-                 )
+def render_pipeline_status():
+    """Render the current pipeline status."""
+    progress_bar = st.progress(st.session_state.current_progress)
+    
+    # Current stage and progress message
+    if hasattr(st.session_state, "current_stage") and st.session_state.current_stage:
+        current_stage = st.session_state.current_stage.replace("_", " ").title()
+        st.markdown(f"**Current Stage:** {current_stage}")
+    
+    st.caption(st.session_state.progress_message)
+    
+    # Show detailed stage information if available
+    if hasattr(st.session_state, "stages_info") and st.session_state.stages_info:
+        st.markdown("#### Stage Progress")
+        
+        for stage_name, stage_info in st.session_state.stages_info.items():
+            status = stage_info.get("status", "not_started")
+            progress = stage_info.get("progress", 0)
+            message = stage_info.get("message", "")
+            
+            # Determine stage class based on status
+            if status == "completed":
+                stage_class = "completed-stage"
+                emoji = "✅"
+            elif status == "running":
+                stage_class = "running-stage"
+                emoji = "⏳"
+            elif status == "failed":
+                stage_class = "failed-stage"
+                emoji = "❌"
             else:
-                 pipeline_status_display.markdown("Pipeline status: Initializing...")
-        except Exception as cb_e:
-            logger.warning(f"Error updating progress UI: {cb_e}", exc_info=False)
+                stage_class = ""
+                emoji = "⏱️"
+            
+            display_name = stage_name.replace("_", " ").title()
+            progress_pct = f"{int(progress * 100)}%" if progress > 0 else ""
+            
+            # Display stage progress
+            st.markdown(f"""
+            <div class="stage-progress {stage_class}">
+                <strong>{emoji} {display_name}</strong> {progress_pct}<br>
+                <small>{message}</small>
+            </div>
+            """, unsafe_allow_html=True)
 
-    result = None
+def display_document_preview(document):
+    """Display a preview of the loaded document."""
+    st.markdown("### Document Preview")
+    
+    # Display document metadata
+    st.markdown(f"**Filename:** {document.filename}")
+    st.markdown(f"**Word Count:** {document.word_count}")
+    
+    # Display a preview of the document text
+    preview_length = min(1000, len(document.text))
+    preview_text = document.text[:preview_length]
+    if len(document.text) > preview_length:
+        preview_text += "..."
+    
+    st.text_area("Document Content Preview", preview_text, height=200)
+
+async def process_document(document, assessment_id, options):
+    """Process document using the orchestrator."""
     try:
-        update_progress_display(0.0, "Starting analysis...")
-        result = await orchestrator.process_with_progress(
-            document=document,
-            progress_callback=update_progress_display
-        )
-        if orchestrator.context:
-            st.session_state.processing_context = orchestrator.context
-            logger.info("Stored processing context in session state.")
+        # Get API key
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            st.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
+            return None
+        
+        # Initialize orchestrator
+        orchestrator = Orchestrator(assessment_id, options, api_key)
+        
+        # Set progress callback
+        orchestrator.set_progress_callback(progress_callback)
+        
+        # Process document
+        result = await orchestrator.process_document(document)
+        
+        # Set result in session state
+        st.session_state.assessment_result = result
+        st.session_state.processing_complete = True
+        
+        return result
     except Exception as e:
-        st.error(f"An error occurred during document processing: {str(e)}")
-        logger.error(f"Document processing pipeline error: {str(e)}", exc_info=True)
-        update_progress_display(st.session_state.get('last_progress', 1.0), f"Error: {str(e)}")
+        st.error(f"Error processing document: {str(e)}")
+        logger.error(f"Error processing document: {e}", exc_info=True)
+        st.session_state.processing_complete = True
         return None
-    finally:
-        # time.sleep(0.5) # Optional delay
-        progress_bar.empty()
-        status_text.empty()
-        pipeline_status_display.empty()
-        if 'orchestrator_instance' in st.session_state:
-            del st.session_state.orchestrator_instance # Clean up instance
 
-    end_time = time.time()
-    logger.info(f"Document processing finished in {end_time - start_time:.2f} seconds.")
-
-    if not isinstance(result, dict) or "metadata" not in result:
-         logger.error(f"Processing completed but returned unexpected result format: {type(result)}")
-         st.error("Processing finished, but the result format is unexpected. Check logs.")
-         return None
-
-    return result
-
-# --- UI Rendering Functions ---
-# render_user_options function remains the same as the previous version
-def render_user_options(assessment_id: str, assessment_loader: AssessmentLoader) -> Dict[str, Any]:
-    """Renders Streamlit widgets for user-configurable options based on the assessment config."""
-    runtime_options = {}
-    logger.debug(f"Rendering user options for assessment_id: {assessment_id}")
-
+def display_assessment_result(result):
+    """Display the assessment result."""
+    if not result:
+        st.error("No assessment result available.")
+        return
+    
     try:
-        config = assessment_loader.load_config(assessment_id)
-        if not config:
-            st.warning(f"Could not load config for '{assessment_id}' to render options.")
-            return {}
-
-        user_options_schema = config.get("user_options", {})
-        if not user_options_schema:
-            # No options to render for this assessment type
-            return {}
-
-        st.subheader("Assessment Options") # Keep the subheader here
-        # --- RENDER WIDGETS (same logic as before) ---
-        for option_key, option_data in user_options_schema.items():
-            if not isinstance(option_data, dict) or "type" not in option_data:
-                logger.warning(f"Skipping invalid user option schema entry: {option_key}")
-                continue
-
-            option_type = option_data.get("type")
-            display_name = option_data.get("display_name", option_key.replace("_", " ").title())
-            description = option_data.get("description", "")
-            default = option_data.get("default")
-            required = option_data.get("required", False)
-            label = f"{display_name}{' *' if required else ''}"
-
+        # Get metadata from result
+        metadata = result.get("metadata", {})
+        assessment_type = metadata.get("assessment_type", "unknown")
+        assessment_id = metadata.get("assessment_id", "unknown")
+        processing_time = metadata.get("processing_time_seconds", 0)
+        
+        # Create a tab view for different result views
+        tabs = st.tabs(["Formatted Result", "Raw Data", "Performance Stats"])
+        
+        # Formatted Result Tab
+        with tabs[0]:
             try:
-                 if option_type == "select":
-                     choices = option_data.get("options", {})
-                     options_list = list(choices.keys())
-                     default_index = options_list.index(default) if default in options_list else 0
-                     selected_value = st.selectbox(
-                         label, options=options_list, index=default_index,
-                         help=description, format_func=lambda x: choices.get(x, x)
-                     )
-                     runtime_options[option_key] = selected_value
-                 elif option_type == "multi_select":
-                    choices_config = option_data.get("options", [])
-                    options_list = []
-                    if choices_config == "dynamic_from_dimensions" and config.get("assessment_type") == "analyze":
-                        framework_def = config.get("framework_definition", {})
-                        options_list = [d.get("name", f"dim_{i}") for i, d in enumerate(framework_def.get("dimensions", []))]
-                    elif isinstance(choices_config, list):
-                        options_list = choices_config
-                    else:
-                         logger.warning(f"Unsupported options format for multi-select '{option_key}': {choices_config}")
-                    selected_values = st.multiselect(label, options=options_list, default=default if isinstance(default, list) else [], help=description)
-                    runtime_options[option_key] = selected_values
-                 elif option_type == "boolean":
-                     runtime_options[option_key] = st.checkbox(label, value=bool(default), help=description)
-                 elif option_type == "text":
-                      runtime_options[option_key] = st.text_input(label, value=str(default) if default is not None else "", help=description)
-                 elif option_type == "textarea":
-                      runtime_options[option_key] = st.text_area(label, value=str(default) if default is not None else "", height=100, help=description) # Reduced height slightly
-                 elif option_type == "number":
-                      runtime_options[option_key] = st.number_input(label, value=default, help=description)
-                 elif option_type == "form":
-                     with st.container():
-                          st.markdown(f"**{display_name}**{':' if description else ''}")
-                          if description: st.caption(description)
-                          form_data = {}
-                          fields = option_data.get("fields", {})
-                          for field_key, field_data in fields.items():
-                                if not isinstance(field_data, dict): continue
-                                field_type = field_data.get("type", "text")
-                                field_required = field_data.get("required", False)
-                                field_name = field_data.get("display_name", field_key.replace("_", " ").title())
-                                field_desc = field_data.get("description", "")
-                                field_default = field_data.get("default")
-                                field_label = f"{field_name}{' *' if field_required else ''}"
-                                # Use unique keys for widgets within forms
-                                widget_key=f"form_{option_key}_{field_key}"
-                                if field_type == "text":
-                                     form_data[field_key] = st.text_input(field_label, value=str(field_default) if field_default is not None else "", help=field_desc, key=widget_key)
-                                elif field_type == "textarea":
-                                     form_data[field_key] = st.text_area(field_label, value=str(field_default) if field_default is not None else "", help=field_desc, key=widget_key)
-                                elif field_type == "number":
-                                     form_data[field_key] = st.number_input(field_label, value=field_default, help=field_desc, key=widget_key)
-                          runtime_options[option_key] = form_data
-                          # Removed the separator from inside the loop, place outside if needed
-                     # st.markdown("---") # Optional separator after the whole form
-                 else:
-                      st.warning(f"Unsupported user option type '{option_type}' for key '{option_key}'")
-            except Exception as widget_e:
-                 st.error(f"Error rendering widget for option '{option_key}': {widget_e}")
-                 logger.error(f"Widget rendering error for '{option_key}': {widget_e}", exc_info=True)
-
-    except Exception as e:
-        st.error(f"An unexpected error occurred while rendering user options: {str(e)}")
-        logger.error(f"Error rendering user options: {str(e)}", exc_info=True)
-
-    return runtime_options
-
-
-# --- Main Application Logic ---
-def main():
-    st.title("🔍 Analyze Document")
-    st.caption("Upload a document and select an assessment configuration to extract insights.")
-
-    # --- Initialization ---
-    try: AppPaths.ensure_dirs()
-    except Exception as e: st.error(f"Failed to ensure application directories: {e}"); logger.error(f"Directory setup error: {e}", exc_info=True); st.stop()
-
-    if "assessment_loader" not in st.session_state:
-        try:
-            st.session_state.assessment_loader = AssessmentLoader()
-            logger.info("AssessmentLoader initialized and added to session state.")
-        except Exception as e: st.error(f"Failed to initialize Assessment Loader: {e}. Check configuration files."); logger.error(f"AssessmentLoader init error: {e}", exc_info=True); st.stop()
-    loader = st.session_state.assessment_loader
-
-    if not os.environ.get("OPENAI_API_KEY"): st.warning("OpenAI API key not set in environment variables.")
-
-    # --- Sidebar Configuration ---
-    with st.sidebar:
-        st.header("Configuration")
-        all_configs_list = loader.get_assessment_configs_list()
-        if not all_configs_list: st.error("No assessment configurations found!"); st.stop()
-        config_options = {cfg['id']: cfg['display_name'] for cfg in all_configs_list}
-        available_ids = list(config_options.keys())
-        default_config_id = available_ids[0]
-        if 'selected_assessment_id' in st.session_state and st.session_state.selected_assessment_id in available_ids: default_config_id = st.session_state.selected_assessment_id
-        try: default_index = available_ids.index(default_config_id)
-        except ValueError: default_index = 0
-
-        # Store selected ID in session state immediately upon selection
-        st.session_state.selected_assessment_id = st.selectbox(
-            "Select Assessment Configuration", options=available_ids, index=default_index,
-            format_func=lambda id: config_options.get(id, id),
-            help="Choose a base analysis type or a saved custom template.",
-            key="sb_assessment_id" # Add key for stability if needed
-        )
-        selected_assessment_id = st.session_state.selected_assessment_id # Use the value from session state
-
-        selected_config_info = next((cfg for cfg in all_configs_list if cfg['id'] == selected_assessment_id), None)
-        if selected_config_info:
-            st.caption(f"Type: {selected_config_info['assessment_type']} | {'Template' if selected_config_info['is_template'] else 'Base Type'}")
-            with st.expander("Description"): st.write(selected_config_info.get('description', 'No description.'))
-        st.divider()
-        model = st.selectbox("LLM Model", ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"], index=0, help="Select OpenAI model.")
-        st.divider()
-        st.subheader("Processing Options")
-        chunk_size = st.slider("Chunk Size", 1000, 16000, 8000, 500, help="Max characters per chunk.")
-        chunk_overlap = st.slider("Chunk Overlap", 0, 1000, 300, 50, help="Characters overlapping.")
-
-    # --- Main Area ---
-    tab_upload, tab_results = st.tabs(["📤 Upload & Analyze", "📊 Results"])
-
-    with tab_upload:
-        col_upload, col_sample = st.columns(2)
-        with col_upload: uploaded_file = st.file_uploader("Upload (.txt, .md)", type=["txt", "md"])
-        with col_sample:
-             sample_dir = APP_ROOT / "data" / "samples"
-             sample_files = []
-             if sample_dir.exists(): sample_files = sorted([f.name for f in sample_dir.glob("*.txt")]) + sorted([f.name for f in sample_dir.glob("*.md")])
-             selected_sample = st.selectbox("Or select a sample", [""] + sample_files)
-
-        document: Optional[Document] = None
-        # Simplified Document Loading Logic
-        try:
-            if uploaded_file:
-                 document = Document.from_uploaded_file(uploaded_file)
-                 st.success(f"Loaded: {document.filename}")
-            elif selected_sample:
-                 file_path = sample_dir / selected_sample
-                 with open(file_path, 'r', encoding='utf-8') as f: doc_text = f.read()
-                 document = Document(text=doc_text, filename=selected_sample)
-                 st.success(f"Loaded: {document.filename}")
-        except Exception as e:
-             st.error(f"Error loading document: {e}")
-             logger.error(f"Error loading document: {e}", exc_info=True)
-
-
-        if document:
-            # Display Doc Info
-            st.markdown("---")
-            st.subheader("📄 Document Details")
+                # Try to format the result as markdown
+                report_md = format_assessment_report(result, assessment_type)
+                
+                # Create a download button for the markdown
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                md_path = AppPaths.get_assessment_output_dir(assessment_type) / f"{assessment_type}_report_{timestamp}.md"
+                with open(md_path, 'w', encoding='utf-8') as f:
+                    f.write(report_md)
+                
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown("### Assessment Report")
+                with col2:
+                    with open(md_path, "rb") as f:
+                        st.download_button(
+                            label="Download Report",
+                            data=f,
+                            file_name=f"{assessment_type}_report_{timestamp}.md",
+                            mime="text/markdown"
+                        )
+                
+                # Display the formatted result
+                st.markdown(report_md)
+                
+            except Exception as e:
+                st.error(f"Error formatting result: {str(e)}")
+                st.json(result.get("result", {}))
+        
+        # Raw Data Tab
+        with tabs[1]:
+            st.markdown("### Raw Assessment Data")
+            
+            # Create a download button for the JSON
+            json_path = AppPaths.get_assessment_output_dir(assessment_type) / f"{assessment_type}_result_{timestamp}.json"
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+            
+            with st.expander("Download Raw Data", expanded=False):
+                with open(json_path, "rb") as f:
+                    st.download_button(
+                        label="Download JSON",
+                        data=f,
+                        file_name=f"{assessment_type}_result_{timestamp}.json",
+                        mime="application/json"
+                    )
+            
+            # Display the JSON result
+            st.json(result)
+        
+        # Performance Stats Tab
+        with tabs[2]:
+            st.markdown("### Performance Statistics")
+            
+            # Display processing time
+            st.metric("Total Processing Time", f"{processing_time:.2f} seconds")
+            
+            # Get statistics from result
+            statistics = result.get("statistics", {})
+            
+            # Display token usage
             col1, col2, col3 = st.columns(3)
-            col1.metric("Filename", document.filename)
-            col2.metric("Word Count", f"{document.word_count:,}")
-            col3.metric("Est. Tokens", f"{document.estimated_tokens:,}")
-            with st.expander("Preview Content"): st.text_area("Preview", document.text[:2000] + ("..." if len(document.text) > 2000 else ""), height=200, disabled=True)
+            with col1:
+                st.metric("Total Tokens", statistics.get("total_tokens", 0))
+            with col2:
+                st.metric("LLM API Calls", statistics.get("total_llm_calls", 0))
+            with col3:
+                st.metric("Document Chunks", statistics.get("total_chunks", 0))
+            
+            # Display stage durations
+            st.markdown("#### Stage Durations")
+            stage_durations = statistics.get("stage_durations", {})
+            for stage, duration in stage_durations.items():
+                st.metric(stage.replace("_", " ").title(), f"{duration:.2f} seconds")
+            
+            # Display token usage per stage
+            st.markdown("#### Token Usage by Stage")
+            stage_tokens = statistics.get("stage_tokens", {})
+            for stage, tokens in stage_tokens.items():
+                st.metric(stage.replace("_", " ").title(), tokens)
+    
+    except Exception as e:
+        st.error(f"Error displaying assessment result: {str(e)}")
+        logger.error(f"Error displaying assessment result: {e}", exc_info=True)
 
-            # ================== KEY CHANGE HERE ==================
-            # Render options and Analyze button *after* document is loaded and info displayed
-            st.markdown("---")
-            custom_runtime_options = render_user_options(selected_assessment_id, loader) # Render options now
-            st.markdown("---")
-
-            if st.button("🚀 Start Analysis", type="primary", use_container_width=True):
-                runtime_options = {"model": model, "chunk_size": chunk_size, "chunk_overlap": chunk_overlap, **custom_runtime_options}
-                logger.info(f"Starting analysis with ID: '{selected_assessment_id}', Options: {runtime_options}")
-                # Clear previous results before starting new analysis
+def main():
+    """Main function for the assessment page."""
+    # Initialize page
+    initialize_assessment_page()
+    
+    # Header
+    st.markdown('<div class="main-header">Document Assessment</div>', unsafe_allow_html=True)
+    st.markdown("Upload a document and analyze it using Beyond Notes' specialized AI agents.")
+    
+    # Load assessment configurations
+    configs = load_assessment_configs()
+    if not configs:
+        return
+    
+    # Sidebar - Configuration
+    with st.sidebar:
+        st.markdown("### Assessment Configuration")
+        
+        # Group configs by assessment type
+        assessment_types = {}
+        for cfg in configs:
+            if not cfg.get("is_template", False):  # Filter out templates for now
+                a_type = cfg.get("assessment_type", "unknown")
+                if a_type not in assessment_types:
+                    assessment_types[a_type] = []
+                assessment_types[a_type].append(cfg)
+        
+        # Let user select assessment type first
+        selected_type = st.selectbox(
+            "Assessment Type",
+            options=list(assessment_types.keys()),
+            index=list(assessment_types.keys()).index(st.session_state.get("selected_assessment_type", list(assessment_types.keys())[0])) if "selected_assessment_type" in st.session_state else 0,
+            format_func=lambda x: {
+                "distill": "📝 Summarization",
+                "extract": "📋 Action Items",
+                "assess": "⚠️ Issues & Risks",
+                "analyze": "📊 Framework Analysis"
+            }.get(x, x.title())
+        )
+        
+        # Save selection to session state
+        st.session_state.selected_assessment_type = selected_type
+        
+        # Then show available configs for that type
+        type_configs = assessment_types.get(selected_type, [])
+        if type_configs:
+            type_options = {cfg["id"]: f"{cfg['display_name']}" for cfg in type_configs}
+            selected_assessment_id = st.selectbox(
+                "Configuration", 
+                options=list(type_options.keys()),
+                format_func=lambda x: type_options.get(x, x)
+            )
+            
+            # Show description of selected assessment
+            selected_config = next((cfg for cfg in configs if cfg["id"] == selected_assessment_id), None)
+            if selected_config:
+                st.info(selected_config.get("description", "No description available"))
+        else:
+            st.warning(f"No configurations found for type '{selected_type}'")
+            selected_assessment_id = None
+        
+        # Model selection
+        st.markdown("### Model Configuration")
+        model_options = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"]
+        selected_model = st.selectbox("LLM Model", options=model_options)
+        
+        # Temperature
+        temperature = st.slider("Temperature", min_value=0.0, max_value=1.0, value=0.2, step=0.1)
+        
+        # Chunking options
+        st.markdown("### Document Processing")
+        chunk_size = st.slider("Chunk Size", min_value=1000, max_value=15000, value=8000, step=1000)
+        chunk_overlap = st.slider("Chunk Overlap", min_value=100, max_value=1000, value=300, step=100)
+        
+        # Create processing options
+        processing_options = {
+            "model": selected_model,
+            "temperature": temperature,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap
+        }
+    
+    # Main content
+    # Document upload panel
+    st.markdown('<div class="section-header">Document Input</div>', unsafe_allow_html=True)
+    
+    # Document upload
+    upload_container = st.container()
+    with upload_container:
+        uploaded_file = st.file_uploader("Upload a document", type=["txt", "md", "pdf", "docx"])
+        
+        if uploaded_file:
+            # Load document
+            document, file_path = load_document(uploaded_file)
+            if document:
+                st.session_state.document = document
+                st.session_state.document_loaded = True
+                display_document_preview(document)
+        
+        # Sample document option
+        if not uploaded_file:
+            st.markdown("#### Or use a sample document")
+            # Add sample document selection here
+    
+    # Processing panel
+    if st.session_state.document_loaded:
+        st.markdown('<div class="section-header">Process Document</div>', unsafe_allow_html=True)
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if selected_assessment_id:
+                process_desc = f"Process with {selected_type.title()} Assessment"
+            else:
+                process_desc = "Select an assessment first"
+            
+            if not st.session_state.processing_started:
+                if st.button(process_desc, disabled=not selected_assessment_id, type="primary", use_container_width=True):
+                    # Mark as processing started
+                    st.session_state.processing_started = True
+                    st.session_state.processing_complete = False
+                    st.session_state.current_progress = 0.0
+                    st.session_state.progress_message = "Starting..."
+                    st.session_state.assessment_result = None
+                    
+                    # Rerun to update UI
+                    st.rerun()
+        
+        with col2:
+            if st.button("Reset", use_container_width=True):
+                # Reset session state
+                st.session_state.document_loaded = False
+                st.session_state.processing_started = False
+                st.session_state.processing_complete = False
+                st.session_state.current_progress = 0.0
+                st.session_state.progress_message = "Not started"
                 st.session_state.assessment_result = None
-                st.session_state.processing_context = None
-                st.session_state.assessment_type = None # Clear derived type too
+                
+                # Rerun to update UI
+                st.rerun()
+    
+    # Progress tracking
+    if st.session_state.processing_started and not st.session_state.processing_complete:
+        st.markdown('<div class="progress-container"></div>', unsafe_allow_html=True)
+        render_pipeline_status()
+        
+        # Process the document (async)
+        if "document" in st.session_state and selected_assessment_id:
+            process_placeholder = st.empty()
+            process_placeholder.info("Processing document...")
+            
+            # Start async processing
+            result = asyncio.run(process_document(
+                st.session_state.document,
+                selected_assessment_id,
+                processing_options
+            ))
+            
+            process_placeholder.empty()
+            
+            # Rerun to update UI with results
+            st.rerun()
+    
+    # Display results
+    if st.session_state.processing_complete and st.session_state.assessment_result:
+        st.markdown('<div class="results-container"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">Assessment Results</div>', unsafe_allow_html=True)
+        display_assessment_result(st.session_state.assessment_result)
 
-                # --- Trigger Analysis ---
-                with st.spinner("Analyzing document... Please wait."): # Use spinner context manager
-                    result_data = asyncio.run(run_analysis_pipeline(document, selected_assessment_id, runtime_options))
-
-                if result_data:
-                    st.session_state.document = document
-                    st.session_state.assessment_result = result_data
-                    st.session_state.assessment_type = result_data.get("metadata",{}).get("assessment_type", "unknown")
-                    logger.info(f"Analysis complete. Result keys: {list(result_data.keys())}")
-                    st.success("✅ Analysis Complete!")
-                    st.info("View detailed results in the '📊 Results' tab.")
-                    try: save_result_to_output(result_data, st.session_state.assessment_type, document.filename)
-                    except Exception as save_e: st.warning(f"Could not automatically save result file: {save_e}")
-                else:
-                     logger.warning("Analysis process did not return a valid result.")
-                     st.warning("Analysis did not complete successfully. Check status messages above and logs for details.")
-            # ====================================================
-
-        else:
-            st.info("Upload a document or select a sample to begin analysis.")
-
-
-    with tab_results:
-        # --- Results Tab Logic (mostly unchanged, relies on session state) ---
-        if "assessment_result" not in st.session_state or st.session_state.assessment_result is None:
-            st.info("Analyze a document first to view results here.")
-        else:
-            result = st.session_state.assessment_result
-            doc = st.session_state.document
-            assessment_type = st.session_state.assessment_type
-
-            st.header(f"📊 Assessment Results: {result.get('metadata',{}).get('assessment_display_name', assessment_type)}")
-            st.caption(f"Document: {doc.filename}")
-
-            meta = result.get("metadata", {})
-            stats = result.get("statistics", {})
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Processing Time", f"{meta.get('total_processing_time', meta.get('processing_time_seconds', 0)):.1f}s") # Check both keys
-            col2.metric("LLM Tokens Used", f"{stats.get('total_llm_tokens_used', 0):,}")
-            col3.metric("LLM Calls", f"{stats.get('total_llm_calls', 0)}")
-            # Dynamic Key Metric
-            key_metric_value = "N/A"; key_metric_label = "Items Found"
-            counts = stats.get("extraction_counts", {})
-            if assessment_type == "extract": key_metric_label, key_metric_value = "Action Items", counts.get("action_items", 0)
-            elif assessment_type == "assess": key_metric_label, key_metric_value = "Issues Found", counts.get("issues", 0)
-            elif assessment_type == "distill": key_metric_label, key_metric_value = "Key Points", counts.get("key_points", 0)
-            col4.metric(key_metric_label, key_metric_value)
-
-            st.markdown("---")
-            tab_report, tab_pipeline, tab_data, tab_debug = st.tabs(["📄 Report", "⚙️ Pipeline", "Raw Data", "🐞 Debug"])
-
-            with tab_report:
-                # (Report display and download logic remains the same)
-                st.subheader("Formatted Report")
-                try:
-                    formatted_report_content = format_assessment_report(result.get("result", {}), assessment_type)
-                    st.markdown(formatted_report_content, unsafe_allow_html=True)
-                    st.markdown("---"); col_dl1, col_dl2 = st.columns(2)
-                    with col_dl1:
-                         json_string = json.dumps(result, indent=2, default=str); fname = f"{Path(doc.filename).stem}_{assessment_type}_result.json"
-                         col_dl1.download_button("💾 Download Full Result (JSON)", json_string, fname, "application/json", use_container_width=True)
-                    with col_dl2:
-                         fname_md = f"{Path(doc.filename).stem}_{assessment_type}_report.md"
-                         col_dl2.download_button("📄 Download Report (Markdown)", formatted_report_content, fname_md, "text/markdown", use_container_width=True)
-                except Exception as format_e: st.error(f"Error displaying report: {format_e}"); logger.error(f"Report display error: {format_e}", exc_info=True); st.json(result.get("result", {"Error": "No result data"}))
-
-            with tab_pipeline:
-                # (Pipeline display logic remains the same)
-                st.subheader("Processing Pipeline Stages")
-                stages = meta.get("stages", {})
-                if stages:
-                    st.markdown(display_pipeline_progress(stages), unsafe_allow_html=True)
-                    durations = {name: data['duration'] for name, data in stages.items() if data.get('duration') is not None}
-                    if durations:
-                        try: # Chart generation
-                            fig, ax = plt.subplots(); sorted_stages = sorted(stages.items(), key=lambda item: item[1].get('start_time', float('inf'))); sorted_names = [s[0] for s in sorted_stages if s[0] in durations]; sorted_durations = [durations[name] for name in sorted_names]
-                            y_pos = range(len(sorted_names)); ax.barh(y_pos, sorted_durations, align='center'); ax.set_yticks(y_pos, labels=sorted_names); ax.invert_yaxis(); ax.set_xlabel("Duration (seconds)"); ax.set_title("Stage Processing Time"); st.pyplot(fig)
-                        except Exception as chart_e: st.error(f"Chart error: {chart_e}"); logger.warning(f"Chart error: {chart_e}", exc_info=True)
-                else: st.info("No pipeline stage info available.")
-
-            with tab_data:
-                # (Raw data display logic remains the same)
-                st.subheader("Explore Processed Data")
-                if result.get("result"):
-                     with st.expander("Formatted Result Output", expanded=True): st.json(result["result"])
-                if result.get("statistics"):
-                     with st.expander("Processing Statistics"): st.json(result["statistics"])
-                # Check context directly for review output as it might not be in main 'result' dict
-                if "review_output" in st.session_state.get("processing_context", {}).results:
-                     with st.expander("Reviewer Feedback"): st.json(st.session_state.processing_context.results["review_output"])
-                if meta.get("errors"):
-                     with st.expander("Processing Errors", expanded=True): st.error("Errors occurred:"); st.json(meta["errors"])
-                if meta.get("warnings"):
-                      with st.expander("Processing Warnings"): st.warning("Warnings generated:"); st.json(meta["warnings"])
-
-
-            with tab_debug:
-                # (Debug display logic remains the same)
-                 st.subheader("Debugging Information")
-                 st.warning("Contains potentially large amounts of raw data.")
-                 with st.expander("Full Result JSON"): st.json(result)
-                 if "processing_context" in st.session_state:
-                      with st.expander("Processing Context State (Summary)"):
-                           try: context_dict = st.session_state.processing_context.to_dict(include_document=False, include_chunks=False); st.json(context_dict)
-                           except Exception as context_e: st.error(f"Could not serialize Processing Context: {context_e}")
-                 else: st.info("Processing context not stored in session state.")
-
-            st.markdown("---"); st.subheader("Next Steps")
-            if "processing_context" in st.session_state:
-                 st.success("✅ Analysis context available.")
-                 if st.button("💬 Go to Chat Page", use_container_width=True): st.switch_page("pages/03_Chat.py")
-            else: st.warning("Processing context not available for Chat.")
-
-# --- Entry Point ---
 if __name__ == "__main__":
-    # Initialize session state keys needed by this page if they don't exist
-    keys_to_init = ["assessment_loader", "selected_assessment_id", "assessment_result",
-                    "document", "assessment_type", "processing_context", "last_progress"]
-    for key in keys_to_init:
-        if key not in st.session_state:
-            st.session_state[key] = None
     main()

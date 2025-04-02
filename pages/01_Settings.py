@@ -1,457 +1,564 @@
-import os
-import sys
-import json
+# pages/01_Settings.py
 import streamlit as st
+import json
 import logging
-from pathlib import Path
 import copy
+from pathlib import Path
 from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("beyond-notes-settings")
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-# Import project components
+# Import components
 from assessments.loader import AssessmentLoader
 from utils.paths import AppPaths
 
+# Ensure directories exist
+AppPaths.ensure_dirs()
 
 # Page config
 st.set_page_config(
-    page_title="Settings - Beyond Notes",
+    page_title="Beyond Notes - Settings",
     page_icon="⚙️",
     layout="wide",
-    initial_sidebar_state="expanded"
 )
 
+# Define accent colors
+PRIMARY_COLOR = "#4CAF50"  # Green
+SECONDARY_COLOR = "#2196F3"  # Blue
+ACCENT_COLOR = "#FF9800"  # Orange
+ERROR_COLOR = "#F44336"  # Red
 
-def display_base_type(base_type, loader, config):
-    """Display a base assessment type configuration."""
-    st.header(f"{config.get('display_name', base_type.title())}")
-    st.caption(config.get("description", ""))
+# CSS to customize the appearance
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: 700;
+        margin-bottom: 1rem;
+    }
+    .section-header {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin-top: 1rem;
+        margin-bottom: 0.5rem;
+    }
+    .card {
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        background-color: rgba(255, 255, 255, 0.05);
+        margin-bottom: 1rem;
+    }
+    .card-header {
+        font-size: 1.2rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+    }
+    .template-card {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #2196F3;
+        background-color: rgba(255, 255, 255, 0.05);
+        margin-bottom: 1rem;
+    }
+    .base-card {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #4CAF50;
+        background-color: rgba(255, 255, 255, 0.05);
+        margin-bottom: 1rem;
+    }
+    .json-editor {
+        font-family: monospace;
+        height: 400px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+def initialize_settings_page():
+    """Initialize the session state variables for the settings page."""
+    if "selected_config_id" not in st.session_state:
+        st.session_state.selected_config_id = None
     
-    # Assessment info in JSON format
-    if st.button("View Assessment Information", key=f"view_json_{base_type}"):
-        st.json(config)
+    if "selected_config" not in st.session_state:
+        st.session_state.selected_config = None
     
-    # Template creation
-    st.subheader("Create Template")
-    st.write("Create a new template based on this assessment type.")
+    if "editing_mode" not in st.session_state:
+        st.session_state.editing_mode = False
     
-    # Template form
-    template_name = st.text_input("Template Name", placeholder="E.g., Client ABC Issue Analysis", key=f"template_name_{base_type}")
-    template_description = st.text_area(
-        "Template Description", 
-        placeholder="Describe the purpose of this template",
-        key=f"template_desc_{base_type}"
-    )
+    if "creating_template" not in st.session_state:
+        st.session_state.creating_template = False
     
-    if st.button("Create Template", key=f"create_template_{base_type}"):
-        if template_name:
-            # Create template
-            template_id = loader.create_template_from_base(base_type, template_name, template_description)
+    if "edited_config" not in st.session_state:
+        st.session_state.edited_config = None
+
+def load_assessment_loader():
+    """Load or get the assessment loader."""
+    if "assessment_loader" not in st.session_state:
+        try:
+            st.session_state.assessment_loader = AssessmentLoader()
+            logger.info("Assessment loader initialized")
+        except Exception as e:
+            st.error(f"Error initializing assessment loader: {str(e)}")
+            logger.error(f"Error initializing assessment loader: {e}", exc_info=True)
+            return None
+    
+    return st.session_state.assessment_loader
+
+def load_config_by_id(assessment_id):
+    """Load a specific assessment configuration."""
+    try:
+        loader = load_assessment_loader()
+        if not loader:
+            return None
+        
+        config = loader.load_config(assessment_id)
+        if not config:
+            st.error(f"Configuration '{assessment_id}' not found.")
+            return None
+        
+        return config
+    except Exception as e:
+        st.error(f"Error loading configuration '{assessment_id}': {str(e)}")
+        logger.error(f"Error loading configuration '{assessment_id}': {e}", exc_info=True)
+        return None
+
+def create_template_from_base(base_id, template_id, display_name, description):
+    """Create a new template from a base assessment."""
+    try:
+        loader = load_assessment_loader()
+        if not loader:
+            return False
+        
+        new_template_id = loader.create_template_from_base(
+            base_assessment_id=base_id,
+            new_template_id=template_id,
+            display_name=display_name,
+            description=description
+        )
+        
+        if new_template_id:
+            st.success(f"New template '{template_id}' created successfully!")
+            return True
+        else:
+            st.error("Failed to create template. Check logs for details.")
+            return False
+    except Exception as e:
+        st.error(f"Error creating template: {str(e)}")
+        logger.error(f"Error creating template: {e}", exc_info=True)
+        return False
+
+def update_template(template_id, updated_config):
+    """Update an existing template configuration."""
+    try:
+        loader = load_assessment_loader()
+        if not loader:
+            return False
+        
+        # Ensure we're not updating critical fields
+        updates = copy.deepcopy(updated_config)
+        if "assessment_id" in updates:
+            del updates["assessment_id"]
+        
+        if "metadata" in updates and "is_template" in updates["metadata"]:
+            del updates["metadata"]["is_template"]
+        
+        success = loader.update_template(
+            template_id=template_id,
+            config_updates=updates
+        )
+        
+        if success:
+            st.success(f"Template '{template_id}' updated successfully!")
+            return True
+        else:
+            st.error("Failed to update template. Check logs for details.")
+            return False
+    except Exception as e:
+        st.error(f"Error updating template: {str(e)}")
+        logger.error(f"Error updating template: {e}", exc_info=True)
+        return False
+
+def delete_template(template_id):
+    """Delete a template configuration."""
+    try:
+        loader = load_assessment_loader()
+        if not loader:
+            return False
+        
+        success = loader.delete_template(template_id)
+        
+        if success:
+            st.success(f"Template '{template_id}' deleted successfully!")
+            return True
+        else:
+            st.error("Failed to delete template. Check logs for details.")
+            return False
+    except Exception as e:
+        st.error(f"Error deleting template: {str(e)}")
+        logger.error(f"Error deleting template: {e}", exc_info=True)
+        return False
+
+def display_config_editor(config):
+    """Display a JSON editor for the configuration."""
+    # Convert config to formatted JSON string
+    config_json = json.dumps(config, indent=2)
+    
+    # Create a multiline text editor
+    edited_json = st.text_area("Edit Configuration", config_json, height=400, key="json_editor")
+    
+    # Add save button
+    if st.button("Save Changes", type="primary"):
+        try:
+            # Parse the edited JSON
+            updated_config = json.loads(edited_json)
             
-            if template_id:
-                st.success(f"Created template: {template_name}")
-                # Reload templates
-                loader.reload()
-                # Set session state to view the new template
-                st.session_state.selected_tab = "My Templates"
-                st.session_state.selected_template = template_id
-                st.experimental_rerun()
+            # Validate basic structure
+            if "assessment_id" not in updated_config:
+                st.error("Missing required 'assessment_id' field.")
+                return None
+            
+            # Check if this is a template
+            is_template = updated_config.get("metadata", {}).get("is_template", False)
+            template_id = updated_config.get("assessment_id")
+            
+            if is_template:
+                # Update the template
+                if update_template(template_id, updated_config):
+                    # Reload the config
+                    st.session_state.edited_config = updated_config
+                    st.session_state.selected_config = updated_config
+                    
+                    # Reset editing mode
+                    st.session_state.editing_mode = False
+                    
+                    # Rerun to update UI
+                    st.rerun()
             else:
-                st.error(f"Failed to create template {template_name}")
+                st.error("Only template configurations can be edited.")
+                return None
+                
+        except json.JSONDecodeError as e:
+            st.error(f"Invalid JSON: {str(e)}")
+            return None
+        except Exception as e:
+            st.error(f"Error saving configuration: {str(e)}")
+            logger.error(f"Error saving configuration: {e}", exc_info=True)
+            return None
+    
+    # Add cancel button
+    if st.button("Cancel", type="secondary"):
+        st.session_state.editing_mode = False
+        st.rerun()
 
-def display_template(template_id, loader, config):
-    """Display a template configuration with editing capabilities."""
-    display_name = config.get("display_name", template_id.replace("template:", ""))
+def display_config_details(config):
+    """Display details of a configuration."""
+    if not config:
+        st.warning("No configuration selected.")
+        return
     
-    st.header(f"{display_name}")
-    st.caption(config.get("description", ""))
+    # Get basic info
+    assessment_id = config.get("assessment_id", "Unknown")
+    assessment_type = config.get("assessment_type", "Unknown")
+    display_name = config.get("display_name", assessment_id)
+    description = config.get("description", "No description available.")
+    version = config.get("version", "Unknown")
+    is_template = config.get("metadata", {}).get("is_template", False)
     
-    # Base type
-    base_type = config.get("metadata", {}).get("base_type", "unknown")
-    st.write(f"Based on: **{base_type.title()}**")
-    
-    # Template sections
-    tabs = st.tabs(["Basic Settings", "Entity Definition", "Workflow", "Output Format"])
-    
-    with tabs[0]:
-        # Basic information tab
-        st.subheader("Basic Information")
-        
-        with st.form(key="basic_settings"):
-            new_display_name = st.text_input("Display Name", value=display_name)
-            new_description = st.text_area("Description", value=config.get("description", ""))
-            
-            # Save changes
-            if st.form_submit_button("Save Basic Settings"):
-                try:
-                    # Update config
-                    updates = {
-                        "display_name": new_display_name,
-                        "description": new_description
-                    }
-                    
-                    # Get template name from ID
-                    template_name = template_id.replace("template:", "")
-                    
-                    # Update template
-                    if loader.update_template(template_name, updates):
-                        st.success("Basic settings updated successfully")
-                        # Reload the template
-                        loader.reload()
-                        st.experimental_rerun()
-                    else:
-                        st.error("Failed to update template")
-                except Exception as e:
-                    st.error(f"Error updating template: {str(e)}")
-    
-    with tabs[1]:
-        # Entity Definition tab
-        st.subheader("Entity Definition")
-        
-        # Get the entity definition based on assessment type
-        entity_key = "entity_definition"
-        if base_type == "analyze":
-            entity_key = "framework_definition"
-        elif base_type == "distill":
-            entity_key = "output_definition"
-        
-        entity_def = config.get(entity_key, {})
-        
-        # Display as JSON with editing
-        st.write("Edit the entity definition:")
-        entity_json = st.text_area(
-            "Entity Definition (JSON)",
-            value=json.dumps(entity_def, indent=2),
-            height=400
-        )
-        
-        # Save changes
-        if st.button("Save Entity Definition"):
-            try:
-                # Parse JSON
-                updated_entity = json.loads(entity_json)
-                
-                # Update config
-                updates = {
-                    entity_key: updated_entity
-                }
-                
-                # Get template name from ID
-                template_name = template_id.replace("template:", "")
-                
-                # Update template
-                if loader.update_template(template_name, updates):
-                    st.success("Entity definition updated successfully")
-                    # Reload the template
-                    loader.reload()
-                    st.experimental_rerun()
-                else:
-                    st.error("Failed to update template")
-            except json.JSONDecodeError:
-                st.error("Invalid JSON format")
-            except Exception as e:
-                st.error(f"Error updating template: {str(e)}")
-    
-    with tabs[2]:
-        # Workflow tab
-        st.subheader("Agent Instructions")
-        
-        workflow = config.get("workflow", {})
-        agent_instructions = workflow.get("agent_instructions", {})
-        
-        # Display each agent's instructions
-        for agent, instructions in agent_instructions.items():
-            st.write(f"**{agent.title()} Agent**")
-            new_instructions = st.text_area(
-                f"Instructions for {agent.title()}",
-                value=instructions,
-                key=f"instr_{agent}",
-                height=150
-            )
-            
-            # Save this agent's instructions
-            if st.button(f"Save {agent.title()} Instructions"):
-                try:
-                    # Update the instructions
-                    updated_workflow = copy.deepcopy(workflow)
-                    updated_workflow["agent_instructions"][agent] = new_instructions
-                    
-                    # Update config
-                    updates = {
-                        "workflow": updated_workflow
-                    }
-                    
-                    # Get template name from ID
-                    template_name = template_id.replace("template:", "")
-                    
-                    # Update template
-                    if loader.update_template(template_name, updates):
-                        st.success(f"{agent.title()} instructions updated successfully")
-                        # Reload the template
-                        loader.reload()
-                        st.experimental_rerun()
-                    else:
-                        st.error(f"Failed to update {agent} instructions")
-                except Exception as e:
-                    st.error(f"Error updating instructions: {str(e)}")
-                    
-        # Stage weights (optional)
-        st.subheader("Stage Weights")
-        st.write("Configure the weight of each stage in the progress bar:")
-        
-        stage_weights = workflow.get("stage_weights", {})
-        if st.checkbox("Edit Stage Weights", value=False):
-            with st.form(key="stage_weights"):
-                updated_weights = {}
-                
-                for stage, weight in stage_weights.items():
-                    updated_weights[stage] = st.slider(
-                        f"{stage.replace('_', ' ').title()}", 
-                        min_value=0.0, 
-                        max_value=1.0, 
-                        value=float(weight),
-                        step=0.05,
-                        key=f"weight_{stage}"
-                    )
-                
-                # Save changes
-                if st.form_submit_button("Save Stage Weights"):
-                    try:
-                        # Update the workflow
-                        updated_workflow = copy.deepcopy(workflow)
-                        updated_workflow["stage_weights"] = updated_weights
-                        
-                        # Update config
-                        updates = {
-                            "workflow": updated_workflow
-                        }
-                        
-                        # Get template name from ID
-                        template_name = template_id.replace("template:", "")
-                        
-                        # Update template
-                        if loader.update_template(template_name, updates):
-                            st.success("Stage weights updated successfully")
-                            # Reload the template
-                            loader.reload()
-                            st.experimental_rerun()
-                        else:
-                            st.error("Failed to update stage weights")
-                    except Exception as e:
-                        st.error(f"Error updating stage weights: {str(e)}")
-    
-    with tabs[3]:
-        # Output Format tab
-        st.subheader("Output Format")
-        
-        output_format = config.get("output_format", {})
-        
-        # Display as JSON with editing
-        st.write("Edit the output format configuration:")
-        output_json = st.text_area(
-            "Output Format (JSON)",
-            value=json.dumps(output_format, indent=2),
-            height=300
-        )
-        
-        # Save changes
-        if st.button("Save Output Format"):
-            try:
-                # Parse JSON
-                updated_output = json.loads(output_json)
-                
-                # Update config
-                updates = {
-                    "output_format": updated_output
-                }
-                
-                # Get template name from ID
-                template_name = template_id.replace("template:", "")
-                
-                # Update template
-                if loader.update_template(template_name, updates):
-                    st.success("Output format updated successfully")
-                    # Reload the template
-                    loader.reload()
-                    st.experimental_rerun()
-                else:
-                    st.error("Failed to update output format")
-            except json.JSONDecodeError:
-                st.error("Invalid JSON format")
-            except Exception as e:
-                st.error(f"Error updating template: {str(e)}")
-    
-    # Template management buttons
-    st.subheader("Template Management")
-    
-    col1, col2 = st.columns(2)
-    
+    # Button options - different for base types vs templates
+    col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
-        # Duplicate template
-        if st.button("Duplicate Template"):
-            try:
-                # Get template name
-                template_name = template_id.replace("template:", "")
-                new_name = f"{template_name} Copy"
-                
-                # Get full config
-                template_config = loader.load_config(template_id)
-                
-                # Create a copy
-                if template_config:
-                    template_id = loader.create_template_from_base(
-                        base_type, 
-                        new_name, 
-                        template_config.get("description", "")
-                    )
-                    
-                    if template_id:
-                        # Update the new template with all settings from original
-                        template_config["display_name"] = new_name
-                        if "metadata" in template_config:
-                            template_config["metadata"]["created_date"] = datetime.now().isoformat()
-                        
-                        # Get template name from ID
-                        new_template_name = template_id.replace("template:", "")
-                        
-                        # Update template
-                        if loader.update_template(new_template_name, template_config):
-                            st.success(f"Duplicated template as: {new_name}")
-                            # Reload the template
-                            loader.reload()
-                            # Set session state to view the new template
-                            st.session_state.selected_template = template_id
-                            st.experimental_rerun()
-                        else:
-                            st.error("Failed to update duplicated template")
-                    else:
-                        st.error(f"Failed to create duplicate template")
-                else:
-                    st.error("Failed to load template for duplication")
-            except Exception as e:
-                st.error(f"Error duplicating template: {str(e)}")
+        if is_template:
+            # Templates can be edited
+            if st.button("Edit Template", type="primary", use_container_width=True):
+                st.session_state.editing_mode = True
+                st.session_state.edited_config = copy.deepcopy(config)
+                st.rerun()
+        else:
+            # Base types can be used to create templates
+            if st.button("Create Template", type="primary", use_container_width=True):
+                st.session_state.creating_template = True
+                st.session_state.base_config_id = assessment_id
+                st.rerun()
     
     with col2:
-        # Delete template with confirmation
-        if st.button("Delete Template"):
-            st.session_state.confirm_delete = template_id
+        if is_template:
+            # Templates can be deleted
+            if st.button("Delete Template", type="secondary", use_container_width=True):
+                if delete_template(assessment_id):
+                    st.session_state.selected_config_id = None
+                    st.session_state.selected_config = None
+                    # Reload assessment loader to refresh configs
+                    st.session_state.assessment_loader.reload()
+                    st.rerun()
+        else:
+            # Base types can be viewed in JSON
+            if st.button("View JSON", type="secondary", use_container_width=True):
+                st.session_state.viewing_json = True
+                st.rerun()
     
-    # Confirmation dialog
-    if st.session_state.get("confirm_delete") == template_id:
-        st.warning("Are you sure you want to delete this template? This action cannot be undone.")
+    with col3:
+        # Copy ID button
+        if st.button("Copy ID", use_container_width=True):
+            # Use streamlit's clipboard functionality
+            st.write(f"ID: `{assessment_id}`")
+            st.success(f"Assessment ID: {assessment_id}")
+    
+    # Display configuration details
+    st.markdown("### Configuration Details")
+    
+    st.markdown(f"**ID:** {assessment_id}")
+    st.markdown(f"**Type:** {assessment_type}")
+    st.markdown(f"**Display Name:** {display_name}")
+    st.markdown(f"**Version:** {version}")
+    st.markdown(f"**Template:** {'Yes' if is_template else 'No'}")
+    
+    st.markdown("**Description:**")
+    st.markdown(f"> {description}")
+    
+    # Metadata
+    metadata = config.get("metadata", {})
+    if metadata:
+        created_date = metadata.get("created_date", "Unknown")
+        modified_date = metadata.get("last_modified_date", "Unknown")
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("Yes, Delete"):
-                try:
-                    # Get template name from ID
-                    template_name = template_id.replace("template:", "")
-                    
-                    # Delete template
-                    if loader.delete_template(template_name):
-                        st.success(f"Deleted template: {template_name}")
-                        # Clear confirmation
-                        st.session_state.pop("confirm_delete", None)
-                        # Go back to base types
-                        st.session_state.selected_tab = "Base Types"
-                        st.session_state.pop("selected_template", None)
-                        # Reload templates
-                        loader.reload()
-                        st.experimental_rerun()
-                    else:
-                        st.error(f"Failed to delete template {template_name}")
-                except Exception as e:
-                    st.error(f"Error deleting template: {str(e)}")
-        
-        with col2:
-            if st.button("Cancel"):
-                # Clear confirmation
-                st.session_state.pop("confirm_delete", None)
-                st.experimental_rerun()
+        with st.expander("Metadata", expanded=False):
+            if is_template and "base_assessment_id" in metadata:
+                st.markdown(f"**Base Configuration:** {metadata.get('base_assessment_id')}")
+            
+            st.markdown(f"**Created:** {created_date}")
+            st.markdown(f"**Last Modified:** {modified_date}")
+    
+    # Configuration sections
+    if "workflow" in config:
+        with st.expander("Workflow Configuration", expanded=False):
+            # Display enabled stages
+            enabled_stages = config.get("workflow", {}).get("enabled_stages", [])
+            st.markdown("**Enabled Stages:**")
+            for stage in enabled_stages:
+                st.markdown(f"- {stage.replace('_', ' ').title()}")
+            
+            # Display agent instructions if available
+            agent_instructions = config.get("workflow", {}).get("agent_instructions", {})
+            if agent_instructions:
+                st.markdown("**Agent Instructions:**")
+                for agent, instruction in agent_instructions.items():
+                    with st.expander(f"{agent.title()} Agent", expanded=False):
+                        st.markdown(instruction)
+    
+    # Main definition section based on assessment type
+    definition_key = {
+        "distill": "output_definition",
+        "extract": "entity_definition",
+        "assess": "entity_definition",
+        "analyze": "framework_definition"
+    }.get(assessment_type)
+    
+    if definition_key and definition_key in config:
+        with st.expander(f"{definition_key.replace('_', ' ').title()}", expanded=True):
+            definition = config.get(definition_key, {})
+            st.json(definition)
+    
+    # Output schema
+    if "output_schema" in config:
+        with st.expander("Output Schema", expanded=False):
+            st.json(config.get("output_schema", {}))
+    
+    # Extraction criteria
+    if "extraction_criteria" in config:
+        with st.expander("Extraction Criteria", expanded=False):
+            st.json(config.get("extraction_criteria", {}))
+    
+    # User options
+    if "user_options" in config:
+        with st.expander("User Options", expanded=False):
+            st.json(config.get("user_options", {}))
+    
+    # View full JSON
+    with st.expander("Full Configuration JSON", expanded=False):
+        st.json(config)
+
+def display_create_template_form(base_id):
+    """Display form for creating a new template from a base assessment."""
+    st.markdown("### Create Template from Base Assessment")
+    
+    # Load base config for reference
+    base_config = load_config_by_id(base_id)
+    if not base_config:
+        st.error(f"Failed to load base configuration: {base_id}")
+        if st.button("Cancel"):
+            st.session_state.creating_template = False
+            st.rerun()
+        return
+    
+    # Display base config info
+    st.markdown(f"**Base Assessment:** {base_config.get('display_name', base_id)}")
+    st.markdown(f"**Type:** {base_config.get('assessment_type', 'Unknown')}")
+    st.markdown(f"**Description:** {base_config.get('description', 'No description available')}")
+    
+    # Form inputs
+    st.markdown("#### New Template Details")
+    
+    # Template ID
+    template_id = st.text_input(
+        "Template ID",
+        value=f"custom_{base_config.get('assessment_type', 'template')}_{datetime.now().strftime('%Y%m%d')}",
+        help="Unique identifier for the template. Use lowercase letters, numbers, and underscores only."
+    )
+    
+    # Display name
+    display_name = st.text_input(
+        "Display Name",
+        value=f"Custom {base_config.get('display_name', 'Template')}",
+        help="Human-readable name for the template."
+    )
+    
+    # Description
+    description = st.text_area(
+        "Description",
+        value=f"Custom template based on {base_config.get('display_name', base_id)}.",
+        help="Detailed description of the template's purpose."
+    )
+    
+    # Buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Create Template", type="primary", use_container_width=True):
+            # Validate inputs
+            if not template_id or " " in template_id or "/" in template_id or "\\" in template_id or "." in template_id:
+                st.error("Invalid Template ID. Use lowercase letters, numbers, and underscores only.")
+                return
+            
+            # Create template
+            if create_template_from_base(base_id, template_id, display_name, description):
+                # Reset state and reload loader
+                st.session_state.creating_template = False
+                st.session_state.base_config_id = None
+                st.session_state.selected_config_id = template_id
+                st.session_state.selected_config = load_config_by_id(template_id)
+                # Reload assessment loader to refresh configs
+                st.session_state.assessment_loader.reload()
+                st.rerun()
+    
+    with col2:
+        if st.button("Cancel", type="secondary", use_container_width=True):
+            st.session_state.creating_template = False
+            st.session_state.base_config_id = None
+            st.rerun()
 
 def main():
-    st.title("Assessment Library Settings")
+    """Main function for the settings page."""
+    # Initialize page
+    initialize_settings_page()
     
-    # Ensure necessary directories exist
-    AppPaths.ensure_dirs()
+    # Load assessment loader
+    loader = load_assessment_loader()
+    if not loader:
+        st.error("Failed to initialize assessment loader. Cannot load configurations.")
+        return
     
-    # Get assessment loader from session state or initialize
-    if "assessment_loader" in st.session_state:
-        loader = st.session_state.assessment_loader
-    else:
-        loader = AssessmentLoader()
-        st.session_state.assessment_loader = loader
+    # Header
+    st.markdown('<div class="main-header">Assessment Settings</div>', unsafe_allow_html=True)
+    st.markdown("Manage assessment configurations and create custom templates.")
     
-    # Check API key
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        st.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
-    
-    # Get assessment types
-    base_types = loader.get_base_types()
-    templates = loader.get_templates()
-    
-    # Tabs for base types and templates
-    if "selected_tab" not in st.session_state:
-        st.session_state.selected_tab = "Base Types"
-    
-    selected_tab = st.radio(
-        "View",
-        ["Base Types", "My Templates"],
-        index=0 if st.session_state.selected_tab == "Base Types" else 1
-    )
-    st.session_state.selected_tab = selected_tab
-    
-    if selected_tab == "Base Types":
-        # Display base assessment types
-        for base_type, info in base_types.items():
-            with st.expander(f"{info['display_name']}", expanded=False):
-                # Load full config
-                config = loader.load_config(base_type)
-                if config:
-                    display_base_type(base_type, loader, config)
-                else:
-                    st.error(f"Could not load configuration for {base_type}")
-    
-    else:  # My Templates
-        if not templates:
-            st.info("No templates created yet. Create one from a base assessment type.")
-        else:
-            # Template selection
-            template_options = {t_id: info["display_name"] for t_id, info in templates.items()}
-            
-            if "selected_template" in st.session_state and st.session_state.selected_template in template_options:
-                default_template = st.session_state.selected_template
+    # Create layout with sidebar for config selection
+    with st.sidebar:
+        st.markdown("### Assessment Configurations")
+        
+        # Refresh button
+        if st.button("Refresh Configurations"):
+            loader.reload()
+            st.success("Configurations refreshed!")
+            # Clear selection
+            st.session_state.selected_config_id = None
+            st.session_state.selected_config = None
+            st.rerun()
+        
+        # Load all configurations
+        all_configs = loader.get_assessment_configs_list()
+        
+        # Group by type and template status
+        base_types = {}
+        templates = []
+        
+        for config in all_configs:
+            if config.get("is_template", False):
+                templates.append(config)
             else:
-                default_template = next(iter(template_options.keys()), None)
-            
-            selected_template = st.selectbox(
-                "Select Template",
-                list(template_options.keys()),
-                format_func=lambda x: template_options.get(x, x),
-                index=list(template_options.keys()).index(default_template) if default_template else 0
-            )
-            
-            st.session_state.selected_template = selected_template
-            
-            # Display selected template
-            if selected_template:
-                config = loader.load_config(selected_template)
-                if config:
-                    display_template(selected_template, loader, config)
-                else:
-                    st.error(f"Could not load configuration for {selected_template}")
+                a_type = config.get("assessment_type", "unknown")
+                if a_type not in base_types:
+                    base_types[a_type] = []
+                base_types[a_type].append(config)
+        
+        # Display base types
+        st.markdown("#### Base Types")
+        for a_type, configs in base_types.items():
+            st.markdown(f"**{a_type.title()}**")
+            for config in configs:
+                if st.sidebar.button(
+                    config.get("display_name", config.get("id", "Unknown")),
+                    key=f"base_{config.get('id')}",
+                    help=config.get("description", ""),
+                    use_container_width=True
+                ):
+                    st.session_state.selected_config_id = config.get("id")
+                    st.session_state.selected_config = load_config_by_id(config.get("id"))
+                    st.session_state.editing_mode = False
+                    st.session_state.creating_template = False
+                    st.rerun()
+        
+        # Display templates
+        if templates:
+            st.markdown("#### Custom Templates")
+            for config in templates:
+                if st.sidebar.button(
+                    config.get("display_name", config.get("id", "Unknown")),
+                    key=f"template_{config.get('id')}",
+                    help=config.get("description", ""),
+                    use_container_width=True
+                ):
+                    st.session_state.selected_config_id = config.get("id")
+                    st.session_state.selected_config = load_config_by_id(config.get("id"))
+                    st.session_state.editing_mode = False
+                    st.session_state.creating_template = False
+                    st.rerun()
+    
+    # Main content area
+    if st.session_state.creating_template and "base_config_id" in st.session_state:
+        # Show template creation form
+        display_create_template_form(st.session_state.base_config_id)
+    elif st.session_state.editing_mode and st.session_state.selected_config:
+        # Show configuration editor
+        st.markdown(f"### Editing Template: {st.session_state.selected_config.get('display_name', st.session_state.selected_config.get('assessment_id', 'Unknown'))}")
+        display_config_editor(st.session_state.selected_config)
+    elif st.session_state.selected_config:
+        # Show configuration details
+        st.markdown(f"### Selected Configuration: {st.session_state.selected_config.get('display_name', st.session_state.selected_config.get('assessment_id', 'Unknown'))}")
+        display_config_details(st.session_state.selected_config)
+    else:
+        # No configuration selected
+        st.info("Select an assessment configuration from the sidebar to view or edit its details.")
+        
+        st.markdown("### Assessment Configurations Overview")
+        st.markdown("""
+        This page allows you to manage assessment configurations used by Beyond Notes:
+        
+        - **View details** of base assessment types
+        - **Create custom templates** based on base types
+        - **Edit templates** to customize their behavior
+        - **Delete templates** that are no longer needed
+        
+        Select a configuration from the sidebar to get started.
+        """)
+        
+        # Quick stats
+        st.markdown("### Configuration Statistics")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Base Types", len(all_configs) - len(templates))
+        with col2:
+            st.metric("Custom Templates", len(templates))
 
 if __name__ == "__main__":
-    # Initialize session state for template deletion confirmation
-    if "confirm_delete" not in st.session_state:
-        st.session_state.confirm_delete = None
-    
     main()
