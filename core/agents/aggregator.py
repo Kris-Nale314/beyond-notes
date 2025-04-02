@@ -74,7 +74,7 @@ class AggregatorAgent(BaseAgent):
                 aggregated_list = copy.deepcopy(items_to_aggregate)  # Pass through original if <= 1
             else:
                 processed = True  # Aggregation will be attempted
-                # Call the LLM-based aggregation method
+                # Call the enhanced LLM-based aggregation method
                 aggregated_list = await self._aggregate_items_llm(
                     context=context,
                     items=items_to_aggregate,
@@ -84,6 +84,9 @@ class AggregatorAgent(BaseAgent):
 
             items_after = len(aggregated_list)
             summary_stats["items_after"] = items_after
+
+            # --- Preserve Evidence Links During Aggregation ---
+            self._update_evidence_links_for_merged_items(context, aggregated_list)
 
             # --- Store Aggregated Results using the enhanced context method ---
             self._store_data(context, data_type, aggregated_list)
@@ -133,6 +136,46 @@ class AggregatorAgent(BaseAgent):
 
         return properties
 
+    def _update_evidence_links_for_merged_items(self, context: ProcessingContext, aggregated_items: List[Dict[str, Any]]) -> None:
+        """
+        Update evidence links for merged items to ensure evidence is preserved.
+        
+        Args:
+            context: The processing context
+            aggregated_items: List of aggregated items including merged_item_ids
+        """
+        # Check if context has evidence store
+        if not hasattr(context, 'evidence_store') or not context.evidence_store:
+            self._log_debug("No evidence store found in context. Skipping evidence link updates.", context)
+            return
+            
+        for item in aggregated_items:
+            merged_ids = item.get("merged_item_ids", [])
+            item_id = item.get("id")
+            
+            if not item_id or not merged_ids:
+                continue
+                
+            # Ensure this item has an entry in the evidence references
+            if item_id not in context.evidence_store["references"]:
+                context.evidence_store["references"][item_id] = []
+                
+            # Gather evidence from all merged items
+            for merged_id in merged_ids:
+                if merged_id == item_id:
+                    continue  # Skip self
+                    
+                # Get evidence for this merged item
+                merged_evidence_refs = context.evidence_store["references"].get(merged_id, [])
+                
+                # Add to the main item's evidence
+                for evidence_ref in merged_evidence_refs:
+                    # Check if already exists
+                    if evidence_ref not in context.evidence_store["references"][item_id]:
+                        context.evidence_store["references"][item_id].append(evidence_ref)
+                        
+        self._log_debug("Updated evidence links for merged items.", context)
+
     async def _aggregate_items_llm(self,
                                context: ProcessingContext,
                                items: List[Dict[str, Any]],
@@ -162,6 +205,12 @@ class AggregatorAgent(BaseAgent):
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Original IDs of all raw items combined into this aggregated item."
+                },
+                "merge_confidence": {
+                    "type": "number",
+                    "description": "Confidence level for the merge decision (0.0-1.0).",
+                    "minimum": 0,
+                    "maximum": 1
                 }
             },
             "required": ["merged_item_ids"]  # At minimum require tracking which items were merged
@@ -192,6 +241,7 @@ class AggregatorAgent(BaseAgent):
         # --- Construct Prompt ---
         merge_rules = "Merge Rules:\n"
         merge_rules += "- Intelligently combine descriptions/text from merged items to create a comprehensive summary.\n"
+        merge_rules += "- Assign a merge_confidence score (0.0-1.0) indicating your confidence in the merge decision.\n"
         
         if assessment_type == "assess": 
             merge_rules += "- Use the HIGHEST severity rating.\n- Preserve the most specific category.\n"
@@ -200,6 +250,12 @@ class AggregatorAgent(BaseAgent):
         
         merge_rules += "- The 'merged_item_ids' list MUST contain the original 'id' field from ALL input items that were combined.\n"
         merge_rules += "- Ensure each output item contains all properties defined in its schema."
+        merge_rules += "- If items are semantically identical or very similar (covering the same core idea), they should be merged."
+        merge_rules += "- If you're unsure about merging, keep items separate (don't merge) and assign a low merge_confidence."
+
+        # Handle large input lists with batching
+        if items_count > 50:
+            return await self._aggregate_in_batches(context, items, data_type, assessment_type, llm_output_schema, merge_rules)
 
         # Prepare items for prompt (limiting size)
         input_items_json = json.dumps(items, indent=2, default=str)
@@ -286,8 +342,13 @@ Pay close attention to correctly populating 'merged_item_ids' to maintain tracea
                     if "merged_item_ids" in agg_item and agg_item["merged_item_ids"]:
                         item_id_for_log = f"merged:{len(agg_item['merged_item_ids'])} items"
                     
-                    self._log_warning(f"Aggregated item ({item_id_for_log}) is missing required fields: {missing_req}. Keeping item but flagging.", context)
+                    self._log_warning(f"Aggregated item ({item_id_for_log}) is missing required fields: {missing_req}. Flagging and adding defaults.", context)
                     agg_item["_validation_warnings"] = f"Missing required fields: {missing_req}"  # Flag item
+                    
+                    # Try to add defaults for missing fields
+                    if "merged_item_ids" in missing_req and "id" in agg_item:
+                        # If merged_item_ids missing but id exists, use id as the only merged id
+                        agg_item["merged_item_ids"] = [agg_item["id"]]
                 
                 # Add to valid items list
                 valid_items.append(agg_item)
@@ -300,3 +361,118 @@ Pay close attention to correctly populating 'merged_item_ids' to maintain tracea
             self._log_error(f"LLM-based aggregation failed: {e}", context, exc_info=True)
             # Re-raise a specific error type to indicate aggregation failure
             raise RuntimeError(f"Aggregation for {data_type} failed: {str(e)}") from e
+
+    async def _aggregate_in_batches(self, 
+                                  context: ProcessingContext,
+                                  items: List[Dict[str, Any]],
+                                  data_type: str,
+                                  assessment_type: str,
+                                  llm_output_schema: Dict[str, Any],
+                                  merge_rules: str) -> List[Dict[str, Any]]:
+        """
+        Aggregate a large number of items by processing them in batches.
+        
+        Args:
+            context: The processing context
+            items: Items to aggregate
+            data_type: Type of data (action_items, issues, etc)
+            assessment_type: Type of assessment
+            llm_output_schema: Schema for LLM output
+            merge_rules: Merge rules string for prompts
+            
+        Returns:
+            List of aggregated items
+        """
+        self._log_info(f"Using batch processing for {len(items)} items", context)
+        
+        # Get item key name
+        item_name = data_type.rstrip('s')
+        aggregated_list_key = f"aggregated_{data_type}"
+        
+        # Determine batch size based on total items
+        items_count = len(items)
+        batch_size = 25  # Default batch size
+        
+        # Calculate number of batches
+        num_batches = (items_count + batch_size - 1) // batch_size  # Ceiling division
+        
+        # Process each batch
+        all_aggregated_items = []
+        for batch_num in range(num_batches):
+            start_idx = batch_num * batch_size
+            end_idx = min(start_idx + batch_size, items_count)
+            batch_items = items[start_idx:end_idx]
+            
+            self._log_info(f"Processing batch {batch_num+1}/{num_batches} with {len(batch_items)} items", context)
+            
+            # Prepare batch items for prompt
+            batch_items_json = json.dumps(batch_items, indent=2, default=str)
+            
+            # Construct prompt for this batch
+            batch_prompt = f"""
+You are an expert AI 'Aggregator' agent specializing in consolidating extracted information. Your goal is to process the provided list of '{item_name}' items, identify duplicates or items describing the same core concept, and merge them into a single, comprehensive entry.
+
+**Base Instructions:** Batch {batch_num+1} of {num_batches}: Aggregate the provided {item_name} items by merging duplicates.
+
+{merge_rules}
+
+**Input Items (Batch {batch_num+1}/{num_batches}, with {len(batch_items)} items):**
+```json
+{batch_items_json}
+```
+
+**Your Task:**
+Analyze the input items. Identify duplicates/overlaps based on semantic meaning. Merge them according to the rules. Produce a consolidated list.
+
+**Output Format:**
+Respond only with a valid JSON object matching this schema:
+```json
+{json.dumps(llm_output_schema, indent=2)}
+```
+Ensure the output is a single JSON object with the key '{aggregated_list_key}' containing the array of aggregated items.
+"""
+
+            # Call LLM for this batch
+            try:
+                # Update progress for this batch
+                batch_progress = (batch_num + 0.5) / num_batches
+                context.update_stage_progress(batch_progress, f"Aggregating batch {batch_num+1}/{num_batches}")
+                
+                # Process batch
+                structured_response = await self._generate_structured(
+                    prompt=batch_prompt,
+                    output_schema=llm_output_schema,
+                    context=context,
+                    temperature=self.options.get("aggregator_temperature", 0.15),
+                    max_tokens=4000
+                )
+                
+                # Extract batch results
+                batch_results = structured_response.get(aggregated_list_key, [])
+                if isinstance(batch_results, list):
+                    all_aggregated_items.extend(batch_results)
+                    self._log_info(f"Batch {batch_num+1} aggregation successful with {len(batch_results)} items", context)
+                else:
+                    self._log_warning(f"Batch {batch_num+1} returned invalid result type: {type(batch_results)}", context)
+                
+            except Exception as e:
+                self._log_error(f"Error processing batch {batch_num+1}: {e}", context, exc_info=True)
+                # Continue with next batch despite error
+                
+        # If we have multiple batches, we need a final aggregation pass to merge across batches
+        if num_batches > 1 and len(all_aggregated_items) > batch_size:
+            self._log_info(f"Performing final aggregation pass across all batches", context)
+            
+            # Update progress
+            context.update_stage_progress(0.9, "Performing final cross-batch aggregation")
+            
+            # Recursively call this method but with a smaller set
+            # The recursive call will use the normal single-batch path
+            return await self._aggregate_items_llm(
+                context=context,
+                items=all_aggregated_items,
+                data_type=data_type,
+                assessment_type=assessment_type
+            )
+            
+        return all_aggregated_items

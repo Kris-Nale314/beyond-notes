@@ -11,18 +11,15 @@ from core.models.context import ProcessingContext
 class PlannerAgent(BaseAgent):
     """
     Analyzes the document and assessment configuration to create a tailored
-    processing plan and potentially refine instructions for downstream agents.
-    
-    Uses the enhanced ProcessingContext for standardized data storage and retrieval.
+    processing plan and instructions for downstream agents.
     """
 
     def __init__(self, llm: CustomLLM, options: Optional[Dict[str, Any]] = None):
         """Initialize the PlannerAgent."""
-        super().__init__(llm, options)
-        self.role = "planner"  # Define the specific role
-        self.name = "PlannerAgent"
+        super().__init__(llm, options or {})
+        self.role = "planner" 
         self.logger = logging.getLogger(f"core.agents.{self.name}")
-        self.logger.info(f"PlannerAgent initialized.")
+        self.logger.info(f"PlannerAgent initialized")
 
     async def process(self, context: ProcessingContext) -> Optional[Dict[str, Any]]:
         """
@@ -37,24 +34,25 @@ class PlannerAgent(BaseAgent):
         self._log_info(f"Starting planning phase for assessment: '{context.display_name}'", context)
 
         try:
-            # --- Get necessary info using context helpers ---
-            document_text_preview = context.document_text[:self.options.get("preview_length", 5000)]
+            # --- Get necessary info from context ---
+            preview_length = self.options.get("preview_length", 5000)
+            document_text_preview = context.document_text[:preview_length]
             document_info = context.document_info
             assessment_type = context.assessment_type
-            assessment_config = context.get_assessment_config()
-            assessment_description = assessment_config.get('description', '')
+            assessment_description = context.assessment_config.get('description', '')
 
-            # Get base planner instructions from the workflow config via context
-            base_planner_instructions = context.get_workflow_instructions(self.role)
-            if not base_planner_instructions:
+            # Get planner instructions from workflow config
+            planner_instructions = context.get_workflow_instructions(self.role)
+            if not planner_instructions:
                 self._log_warning("No specific instructions found for planner in workflow config.", context)
-                base_planner_instructions = "Analyze the document start and create a processing plan."  # Basic fallback
-
-            # Get the core target definition for this assessment type
+                planner_instructions = "Analyze the document start and create a processing plan."
+            
+            # Get target definition based on assessment type
             target_definition = context.get_target_definition()
             if not target_definition:
-                self._log_error(f"Could not retrieve target definition for assessment type '{assessment_type}'. Cannot proceed with planning.", context)
-                raise ValueError(f"Missing target definition for type {assessment_type} in config.")
+                error_msg = f"Missing target definition for assessment type '{assessment_type}'"
+                self._log_error(error_msg, context)
+                raise ValueError(error_msg)
 
             target_name = target_definition.get("name", assessment_type)
             target_desc = target_definition.get("description", "No description provided.")
@@ -66,12 +64,12 @@ Your goal is to analyze the start of a document and the assessment configuration
 
 **Assessment Context:**
 * **Assessment ID:** {context.assessment_id}
-* **Assessment Type:** {assessment_type} ({self.options.get(assessment_type,{}).get('display_name', assessment_type)})
+* **Assessment Type:** {assessment_type} ({context.display_name})
 * **Description:** {assessment_description}
 * **Primary Target:** Analyze/Extract '{target_name}' ({target_desc})
 
 **Base Instructions for Planner:**
-{base_planner_instructions}
+{planner_instructions}
 
 **Document Information:**
 * Word Count: {document_info.get('word_count', 'N/A')}
@@ -84,11 +82,11 @@ Your goal is to analyze the start of a document and the assessment configuration
 **Your Task:**
 Based on the preview, assessment context, and your instructions, generate a JSON object outlining the processing plan. Include the following keys:
 
-1.  `document_type`: (string) Your assessment of the document type (e.g., "Meeting Transcript", "Project Report", "Customer Feedback", "Technical Article", "General Text").
+1.  `document_type`: (string) Your assessment of the document type (e.g., "Meeting Transcript", "Project Report", "Customer Feedback").
 2.  `key_topics_or_sections`: (list of strings) Identify the main topics, sections, or themes apparent from the preview.
-3.  `extraction_focus`: (string) Specific guidance for the Extractor agent. What specific types of information, keywords, patterns, or entities related to '{target_name}' should it prioritize finding in the full document? Reference properties from the target definition if applicable (e.g., for action items: description, owner, due_date).
-4.  `evaluation_focus`: (string) Guidance for the Evaluator agent. What criteria should be used to assess the extracted information? (e.g., for issues: severity, impact; for action items: clarity, completeness; for readiness: evidence supporting maturity levels). Reference rating scales or classification rules if relevant.
-5.  `special_considerations`: (string) Any potential challenges, biases, required sensitivities, or specific formatting notes based on the preview and assessment type (e.g., "Document seems informal", "Contains PII - needs anonymization", "Focus on quantitative data"). Use "None" if no special considerations are apparent.
+3.  `extraction_focus`: (string) Specific guidance for the Extractor agent on what to look for related to '{target_name}'.
+4.  `evaluation_focus`: (string) Guidance for the Evaluator agent on how to assess the extracted information.
+5.  `special_considerations`: (string) Any potential challenges, biases, or formatting notes.
 
 **Output Format:** Respond *only* with a valid JSON object containing these keys.
 """
@@ -128,7 +126,7 @@ Based on the preview, assessment context, and your instructions, generate a JSON
                 ]
             }
 
-            # --- Use BaseAgent helper for LLM call ---
+            # --- Generate the plan using the LLM ---
             planning_result = await self._generate_structured(
                 prompt=prompt,
                 output_schema=output_schema,
@@ -136,24 +134,24 @@ Based on the preview, assessment context, and your instructions, generate a JSON
                 temperature=self.options.get("planner_temperature", 0.3)
             )
 
-            # --- Post-processing (Example: Add framework info if 'analyze') ---
+            # --- For analyze assessments, add framework info if available ---
             if assessment_type == "analyze":
                 dimensions = context.get_framework_dimensions()
                 if dimensions:
                     planning_result["framework_info"] = {
                         "name": target_definition.get("name"),
-                        "dimensions": [{"name": d.get("name"), "criteria": [c.get("name") for c in d.get("criteria", [])]} for d in dimensions]
+                        "dimensions": [{"name": d.get("name"), "description": d.get("description", "")} 
+                                      for d in dimensions]
                     }
                     self._log_debug("Added framework dimension info to planning result.", context)
 
             self._log_info(f"Planning complete. Assessed document type: {planning_result.get('document_type', 'Unknown')}", context)
 
-            # Store the plan using the enhanced context method
-            self._store_data(context, "planning", planning_result)
+            # Store the plan in context (don't pass data_type for planning)
+            self._store_data(context, None, planning_result)
 
             return planning_result
 
         except Exception as e:
             self._log_error(f"PlannerAgent failed: {str(e)}", context, exc_info=True)
-            # Re-raise the exception so the orchestrator can mark the stage as failed
-            raise
+            raise  # Re-raise for the orchestrator to handle

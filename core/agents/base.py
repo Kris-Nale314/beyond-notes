@@ -2,19 +2,21 @@
 import logging
 import json
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, List, Union
 
-# Import CustomLLM and ProcessingContext
-from core.llm.customllm import CustomLLM, UsageDict
+# Import CustomLLM
+from core.llm.customllm import CustomLLM
 from core.models.context import ProcessingContext
 
 class BaseAgent(ABC):
     """
-    Abstract base class for agents, handling LLM interaction, options, logging,
-    and defining the standard 'process' interface.
+    Abstract base class for agents that work with the ProcessingContext.
     
-    Features standardized data storage and retrieval methods for the enhanced
-    ProcessingContext, token tracking, and consistent logging.
+    Provides standard interfaces for:
+    1. LLM interaction (generate text and structured output)
+    2. Data storage and retrieval from context
+    3. Error handling and logging
+    4. Evidence tracking
     """
 
     def __init__(self,
@@ -26,36 +28,52 @@ class BaseAgent(ABC):
 
         self.llm = llm
         self.options = options or {}
-        self.role = "base"  # Should be overridden by subclasses
+        self.role = "base"  # IMPORTANT: Must be overridden by subclasses to match orchestrator role mapping
         self.name = self.__class__.__name__
         self.logger = logging.getLogger(f"core.agents.{self.name}")
 
         self.logger.info(f"Agent '{self.name}' initialized for role '{self.role}'.")
-        if self.options:
-            self.logger.debug(f"Agent '{self.name}' options: {self.options}")
 
     @abstractmethod
     async def process(self, context: ProcessingContext) -> Any:
-        """Main processing method to be implemented by subclasses."""
+        """
+        Main processing method to be implemented by subclasses.
+        
+        Args:
+            context: The shared ProcessingContext object.
+            
+        Returns:
+            Processing result that will be passed to the next stage.
+        """
         pass
 
-    # --- Enhanced Context Interaction Methods ---
+    # --- Data Storage & Retrieval Methods ---
 
     def _store_data(self, context: ProcessingContext, data_type: str, data: Any) -> None:
         """
-        Store agent results in the ProcessingContext using the standardized method.
+        Store agent results in the ProcessingContext.
         
         Args:
             context: The ProcessingContext
             data_type: Type of data (e.g., "action_items", "issues", "overall_assessment")
+                Note: Should be None for 'planning' and 'formatted' categories
             data: The data to store
         """
-        context.store_agent_data(self.role, data_type, data)
-        self._log_debug(f"Stored {data_type} data in context", context)
+        # Special case for planning and formatting which don't use data_type
+        if self.role in ["planner", "formatter", "reviewer"]:
+            context.store_agent_data(self.role, None, data)
+            self._log_debug(f"Stored {self.role} data in context", context)
+        else:
+            if not data_type:
+                self._log_warning(f"No data_type specified for {self.role}. Using 'default'", context)
+                data_type = "default"
+                
+            context.store_agent_data(self.role, data_type, data)
+            self._log_debug(f"Stored {data_type} data in context for {self.role}", context)
         
-    def _get_data(self, context: ProcessingContext, agent_role: str, data_type: str, default=None) -> Any:
+    def _get_data(self, context: ProcessingContext, agent_role: str, data_type: str = None, default=None) -> Any:
         """
-        Retrieve data from the ProcessingContext using the standardized method.
+        Retrieve data from the ProcessingContext.
         
         Args:
             context: The ProcessingContext
@@ -66,16 +84,17 @@ class BaseAgent(ABC):
         Returns:
             The retrieved data or default value
         """
-        result = context.get_data_for_agent(agent_role, data_type)
-        if result is None or (isinstance(result, list) and len(result) == 0):
-            self._log_debug(f"No {data_type} data found from {agent_role}", context)
+        result = context.get_data_for_agent(agent_role, data_type, default)
+        if result is None or result == default:
+            self._log_debug(f"No data found from {agent_role}" + (f" with type {data_type}" if data_type else ""), context)
             return default
         
-        self._log_debug(f"Retrieved {data_type} data from {agent_role}", context)
+        self._log_debug(f"Retrieved data from {agent_role}" + (f" with type {data_type}" if data_type else ""), context)
         return result
     
     def _add_evidence(self, context: ProcessingContext, item_id: str, 
-                     evidence_text: str, chunk_index: Optional[int] = None) -> str:
+                     evidence_text: str, chunk_index: Optional[int] = None,
+                     confidence: Optional[float] = None) -> str:
         """
         Add evidence to the context for an item.
         
@@ -84,38 +103,56 @@ class BaseAgent(ABC):
             item_id: The ID of the item being evidenced
             evidence_text: The text supporting the item
             chunk_index: Optional chunk index for source tracking
+            confidence: Optional confidence score
             
         Returns:
             The evidence reference ID
         """
         source_info = {"chunk_index": chunk_index} if chunk_index is not None else None
-        return context.add_evidence(item_id, evidence_text, source_info)
+        ref_id = context.add_evidence(item_id, evidence_text, source_info, confidence)
+        self._log_debug(f"Added evidence (ref_id: {ref_id}) for item {item_id}", context)
+        return ref_id
+        
+    def _get_evidence(self, context: ProcessingContext, item_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all evidence for an item.
+        
+        Args:
+            context: The ProcessingContext
+            item_id: The ID of the item
+            
+        Returns:
+            List of evidence dictionaries
+        """
+        evidence = context.get_evidence_for_item(item_id)
+        self._log_debug(f"Retrieved {len(evidence)} evidence items for item {item_id}", context)
+        return evidence
 
     # --- Logging Helpers ---
     
     def _log_info(self, message: str, context: Optional[ProcessingContext] = None) -> None:
         """Log an info message, optionally including context run_id."""
-        prefix = f"[{context.run_id}] " if context else ""
+        prefix = f"[{context.run_id}] " if context and hasattr(context, 'run_id') else ""
         self.logger.info(f"{prefix}{message}")
 
     def _log_debug(self, message: str, context: Optional[ProcessingContext] = None) -> None:
         """Log a debug message, optionally including context run_id."""
-        prefix = f"[{context.run_id}] " if context else ""
+        prefix = f"[{context.run_id}] " if context and hasattr(context, 'run_id') else ""
         self.logger.debug(f"{prefix}{message}")
 
     def _log_warning(self, message: str, context: Optional[ProcessingContext] = None) -> None:
         """Log a warning message, optionally including context run_id."""
-        prefix = f"[{context.run_id}] " if context else ""
+        prefix = f"[{context.run_id}] " if context and hasattr(context, 'run_id') else ""
         self.logger.warning(f"{prefix}{message}")
-        if context:
-            context.add_warning(message, stage=context.metadata.get("current_stage"))
+        if context and hasattr(context, 'add_warning'):
+            context.add_warning(message, stage=context.pipeline_state.get("current_stage"))
 
     def _log_error(self, message: str, context: Optional[ProcessingContext] = None, exc_info=False) -> None:
         """Log an error message, optionally including context run_id and exception info."""
-        prefix = f"[{context.run_id}] " if context else ""
+        prefix = f"[{context.run_id}] " if context and hasattr(context, 'run_id') else ""
         self.logger.error(f"{prefix}{message}", exc_info=exc_info)
 
-    # --- LLM Interaction Wrappers ---
+    # --- LLM Interaction Methods ---
 
     async def _generate(self, 
                        prompt: str, 
@@ -123,7 +160,7 @@ class BaseAgent(ABC):
                        system_prompt: Optional[str]=None, 
                        **kwargs) -> str:
         """
-        Wrapper for LLM completion call with logging, error handling, and token tracking.
+        Generate text completion using the LLM.
         
         Args:
             prompt: The prompt to send to the LLM
@@ -135,7 +172,6 @@ class BaseAgent(ABC):
             The generated text string
         """
         self._log_debug(f"Generating LLM completion. Prompt length: {len(prompt)}", context)
-        context.log_agent_action(self.name, "llm_call_start", {"prompt_length": len(prompt), **kwargs})
         
         try:
             # Default LLM parameters from agent options or method kwargs
@@ -156,21 +192,14 @@ class BaseAgent(ABC):
             total_tokens = usage_dict.get("total_tokens")
             if total_tokens is not None:
                 context.track_token_usage(total_tokens)
-            else:
-                self._log_warning("Token usage information missing from LLM response.", context)
-                total_tokens = 0  # Assume 0 if missing
+            
+            self._log_debug(f"LLM call successful. Response length: {len(result_str)}, Tokens: {total_tokens or 'unknown'}", context)
 
-            context.log_agent_action(self.name, "llm_call_success", 
-                                    {"response_length": len(result_str), "usage": usage_dict})
-            self._log_debug(f"LLM call successful. Response length: {len(result_str)}, Tokens: {total_tokens}", context)
-
-            return result_str  # Return only the string result
+            return result_str
 
         except Exception as e:
             self._log_error(f"LLM completion failed: {e}", context, exc_info=True)
-            context.log_agent_action(self.name, "llm_call_error", {"error": str(e)})
             raise RuntimeError(f"LLM call failed for agent {self.name}") from e
-
 
     async def _generate_structured(self, 
                                 prompt: str, 
@@ -179,7 +208,7 @@ class BaseAgent(ABC):
                                 system_prompt: Optional[str]=None, 
                                 **kwargs) -> Dict[str, Any]:
         """
-        Wrapper for structured LLM call with logging, error handling, and token tracking.
+        Generate structured output (JSON) using the LLM.
         
         Args:
             prompt: The prompt to send to the LLM
@@ -191,22 +220,10 @@ class BaseAgent(ABC):
         Returns:
             The generated structured output as a dictionary
         """
-        self._log_debug(f"Generating structured LLM output. Schema keys: {list(output_schema.get('properties', {}).keys())}", context)
-        context.log_agent_action(self.name, "structured_llm_call_start", {"prompt_length": len(prompt), **kwargs})
+        schema_properties = list(output_schema.get("properties", {}).keys())
+        self._log_debug(f"Generating structured LLM output with schema keys: {schema_properties}", context)
         
         try:
-            # Verify schema structure has required elements
-            if "type" not in output_schema:
-                output_schema["type"] = "object"
-                self._log_debug("Added missing 'type': 'object' to output schema", context)
-                
-            if output_schema.get("type") == "object" and "properties" not in output_schema:
-                output_schema["properties"] = {}
-                self._log_debug("Added missing 'properties' to output schema", context)
-            
-            # Log important details for debugging
-            self._log_debug(f"Schema structure: {json.dumps(output_schema, indent=2)}", context)
-            
             llm_params = {
                 "max_tokens": self.options.get("max_structured_tokens", 2000),
                 "temperature": self.options.get("structured_temperature", 0.2),
@@ -225,23 +242,17 @@ class BaseAgent(ABC):
             total_tokens = usage_dict.get("total_tokens")
             if total_tokens is not None:
                 context.track_token_usage(total_tokens)
-            else:
-                self._log_warning("Token usage information missing from structured LLM response.", context)
-                total_tokens = 0
-
-            context.log_agent_action(self.name, "structured_llm_call_success", {"usage": usage_dict})
-            self._log_debug(f"Structured LLM call successful. Tokens: {total_tokens}", context)
+            
+            self._log_debug(f"Structured LLM call successful. Tokens: {total_tokens or 'unknown'}", context)
 
             # Basic validation: Ensure we got a dictionary
             if not isinstance(result_dict, dict):
                 raise TypeError(f"Structured LLM call did not return a dictionary as expected. Type: {type(result_dict)}")
 
-            return result_dict  # Return only the dictionary result
+            return result_dict
 
         except Exception as e:
-            # Catch potential TypeErrors from validation above too
             self._log_error(f"Structured LLM generation failed: {e}", context, exc_info=True)
-            context.log_agent_action(self.name, "structured_llm_call_error", {"error": str(e)})
             
             # Return an empty dictionary as a fallback
             self._log_warning("Returning empty dict as fallback from failed structured LLM call", context)

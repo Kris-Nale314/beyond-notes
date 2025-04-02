@@ -15,15 +15,16 @@ class ReviewerAgent(BaseAgent):
     with the assessment configuration. Provides feedback but does not modify
     the formatted output directly.
     
-    Uses the enhanced ProcessingContext for standardized data storage and retrieval.
+    This enhanced implementation properly uses the BaseAgent methods for data
+    access and follows standardized patterns for working with ProcessingContext.
     """
 
     def __init__(self, llm: CustomLLM, options: Optional[Dict[str, Any]] = None):
         """Initialize the ReviewerAgent."""
         super().__init__(llm, options)
+        # IMPORTANT: role must match the orchestrator mapping
         self.role = "reviewer"
-        self.name = "ReviewerAgent"
-        self.logger = logging.getLogger(f"core.agents.{self.name}")
+        self.logger = logging.getLogger(f"core.agents.{self.__class__.__name__}")
         self.logger.info(f"ReviewerAgent initialized.")
 
     async def process(self, context: ProcessingContext) -> Optional[Dict[str, Any]]:
@@ -38,13 +39,13 @@ class ReviewerAgent(BaseAgent):
         """
         self._log_info(f"Starting review phase for assessment: '{context.display_name}'", context)
 
-        # --- Get Data using the enhanced context method ---
-        formatted_output = self._get_data(context, "formatter", "formatted", None)
+        # --- Get Data using BaseAgent methods ---
+        formatted_output = self._get_data(context, "formatter", None)
         if not formatted_output or not isinstance(formatted_output, dict):
             self._log_warning("No valid formatted output found in context. Cannot perform review.", context)
             # Store minimal review result in context
             error_review = {"error": "Could not perform review: No formatted output available."}
-            self._store_data(context, "review", error_review)
+            self._store_data(context, None, error_review)
             return error_review
 
         try:
@@ -81,6 +82,20 @@ class ReviewerAgent(BaseAgent):
                 "required": ["overall_quality_score", "schema_adherence_score", "clarity_score", "completeness_score", "review_summary", "strengths", "areas_for_improvement", "specific_suggestions"]
             }
 
+            # --- Get Input Data for Review ---
+            # Get additional data for context
+            evaluated_items_count = 0
+            data_type_map = {
+                "extract": "action_items",
+                "assess": "issues",
+                "distill": "key_points",
+                "analyze": "evidence"
+            }
+            data_type = data_type_map.get(context.assessment_type)
+            if data_type:
+                evaluated_items = self._get_data(context, "evaluator", data_type, [])
+                evaluated_items_count = len(evaluated_items)
+
             # --- Construct Prompt for LLM Review ---
             # Summarize the report slightly for the prompt if it's huge
             report_preview_json = json.dumps(formatted_output, indent=2, default=str, ensure_ascii=False)
@@ -96,6 +111,7 @@ You are an expert AI 'Reviewer' agent. Your task is to perform a quality control
 * **Assessment ID:** {context.assessment_id}
 * **Assessment Type:** {context.assessment_type} ({context.display_name})
 * **Document:** {context.document_info.get('filename', 'N/A')}
+* **Total Items:** {evaluated_items_count} items were processed and evaluated
 
 **Expected Output Schema (What the Formatter *should* have produced):**
 ```json
@@ -119,6 +135,7 @@ Critically evaluate the 'Formatted Output to Review'. Assess its quality, clarit
 
 Focus on providing actionable suggestions if improvements are needed.
 Be objective in your scoring.
+If the output is excellent, say so, but still provide at least one suggestion for improvement.
 """
 
             # --- LLM Call to Perform Review ---
@@ -130,8 +147,36 @@ Be objective in your scoring.
                 max_tokens=self.options.get("reviewer_max_tokens", 2000)
             )
 
-            # --- Store review results using the enhanced context method ---
-            self._store_data(context, "review", review_result)
+            # --- Process Review Results ---
+            # Add metadata to the review results
+            review_result["metadata"] = {
+                "timestamp": context.metadata.get("current_stage"),
+                "assessment_id": context.assessment_id,
+                "assessment_type": context.assessment_type
+            }
+
+            # Calculate aggregate score
+            scores = [
+                review_result.get("overall_quality_score", 0),
+                review_result.get("schema_adherence_score", 0),
+                review_result.get("clarity_score", 0),
+                review_result.get("completeness_score", 0)
+            ]
+            avg_score = sum(scores) / len(scores)
+            review_result["aggregate_score"] = round(avg_score, 1)
+
+            # Determine review status
+            if avg_score >= 8.0:
+                review_result["status"] = "excellent"
+            elif avg_score >= 6.0:
+                review_result["status"] = "good"
+            elif avg_score >= 4.0:
+                review_result["status"] = "needs_improvement"
+            else:
+                review_result["status"] = "poor"
+
+            # --- Store review results using the enhanced BaseAgent method ---
+            self._store_data(context, None, review_result)
             self._log_info(f"Review complete. Overall Score: {review_result.get('overall_quality_score', 'N/A')}/10", context)
 
             return review_result
@@ -143,6 +188,6 @@ Be objective in your scoring.
                 "error": f"Review Agent Failed: {str(e)}",
                 "message": "Could not generate review feedback for the formatted output."
             }
-            self._store_data(context, "review", error_review)
+            self._store_data(context, None, error_review)
             # Re-raise the exception to fail the stage
             raise

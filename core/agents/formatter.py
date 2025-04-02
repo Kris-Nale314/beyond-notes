@@ -1,8 +1,10 @@
 # core/agents/formatter.py
 import logging
+import time
 import json
 import copy
 from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
 
 # Import base class and context/LLM types
 from .base import BaseAgent
@@ -14,15 +16,16 @@ class FormatterAgent(BaseAgent):
     Formats the evaluated and aggregated information into the final,
     structured output according to the assessment configuration's output_schema.
     
-    Uses the enhanced ProcessingContext for standardized data storage and retrieval.
+    This enhanced implementation properly uses the BaseAgent methods for data
+    access and follows standardized patterns for working with ProcessingContext.
     """
 
     def __init__(self, llm: CustomLLM, options: Optional[Dict[str, Any]] = None):
         """Initialize the FormatterAgent."""
         super().__init__(llm, options)
+        # IMPORTANT: role must match the orchestrator mapping
         self.role = "formatter"
-        self.name = "FormatterAgent"
-        self.logger = logging.getLogger(f"core.agents.{self.name}")
+        self.logger = logging.getLogger(f"core.agents.{self.__class__.__name__}")
         self.logger.info(f"FormatterAgent initialized.")
 
     async def process(self, context: ProcessingContext) -> Dict[str, Any]:
@@ -50,7 +53,7 @@ class FormatterAgent(BaseAgent):
             output_format_hints = context.get_output_format_config() or {}
             base_formatter_instructions = context.get_workflow_instructions(self.role) or "Format the evaluated data into the final report structure defined by the output schema."
             
-            # --- Get Data using the enhanced context methods ---
+            # --- Get Data using BaseAgent methods ---
             data_type_map = {
                 "extract": "action_items",
                 "assess": "issues",
@@ -61,6 +64,7 @@ class FormatterAgent(BaseAgent):
             data_type = data_type_map.get(assessment_type)
             if not data_type:
                 self._log_warning(f"Unsupported assessment type: '{assessment_type}'. Will use minimal formatting.", context)
+                data_type = "default"
             
             # First try to get evaluated items
             evaluated_items = self._get_data(context, "evaluator", data_type, [])
@@ -79,7 +83,7 @@ class FormatterAgent(BaseAgent):
             overall_assessment = self._get_data(context, "evaluator", "overall_assessment", {})
             
             # Get planning results for context
-            planning_results = self._get_data(context, "planner", "planning", {})
+            planning_results = self._get_data(context, "planner", None, {})
             
             # --- Build Data Summary for Prompt ---
             item_count = len(evaluated_items)
@@ -91,9 +95,6 @@ class FormatterAgent(BaseAgent):
             
             if len(evaluated_items) > max_items_in_prompt:
                 self._log_warning(f"Prompt will include only first {max_items_in_prompt} of {len(evaluated_items)} items due to length constraints.", context)
-            
-            # Get different fields to include based on assessment type
-            self._log_debug("Preparing items for prompt", context)
             
             # Create summarized versions of items for the prompt
             summarized_items = self._prepare_items_for_prompt(items_for_prompt, assessment_type)
@@ -167,8 +168,22 @@ Output Format: Respond only with the single, valid JSON object conforming to the
                 # Add warning to the output itself
                 final_output_dict["formatter_warnings"] = final_output_dict.get("formatter_warnings", []) + [f"Output missing required keys: {missing_keys}"]
 
-            # --- Store formatted output using the enhanced context method ---
-            self._store_data(context, "formatted", final_output_dict)
+            # --- Enrich metadata ---
+            if "metadata" in final_output_dict:
+                # Add document and processing info to metadata
+                meta = final_output_dict["metadata"]
+                if isinstance(meta, dict):
+                    meta.update({
+                        "document_name": context.document_info.get("filename", "Unknown"),
+                        "word_count": context.document_info.get("word_count", 0),
+                        "processing_time": time.time() - context.start_time if hasattr(context, "start_time") else 0,
+                        "date_analyzed": datetime.now(timezone.utc).isoformat(),
+                        "assessment_id": context.assessment_id,
+                        "assessment_type": context.assessment_type
+                    })
+
+            # --- Store formatted output using the enhanced BaseAgent method ---
+            self._store_data(context, None, final_output_dict)
             self._log_info("Formatting phase complete. Final structure generated and stored in context.", context)
             
             return final_output_dict
@@ -181,9 +196,9 @@ Output Format: Respond only with the single, valid JSON object conforming to the
                 "details": f"Could not generate report based on schema for assessment {context.assessment_id}."
             }
             # Store the error output anyway
-            self._store_data(context, "formatted", error_output)
+            self._store_data(context, None, error_output)
             return error_output
-            
+
     def _prepare_items_for_prompt(self, items: List[Dict[str, Any]], assessment_type: str) -> List[Dict[str, Any]]:
         """Prepare a summarized version of items for the LLM prompt."""
         summarized_items = []
@@ -214,3 +229,4 @@ Output Format: Respond only with the single, valid JSON object conforming to the
             summarized_items.append(summarized_item)
             
         return summarized_items
+

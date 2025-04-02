@@ -74,29 +74,67 @@ class EvaluatorAgent(BaseAgent):
                 return {"evaluated_count": 0, "failed_count": 0}
 
             self._log_info(f"Starting evaluation for {total_items_to_evaluate} {data_type}.", context)
+            
+            # Determine batch size for evaluation
+            batch_size = self.options.get("evaluation_batch_size", 50)
+            use_batching = total_items_to_evaluate > batch_size
+            
+            if use_batching:
+                self._log_info(f"Using batch evaluation for {total_items_to_evaluate} items (batch size: {batch_size})", context)
+                # Evaluate items in batches
+                evaluated_items = []
+                
+                # Calculate number of batches
+                num_batches = (total_items_to_evaluate + batch_size - 1) // batch_size
+                
+                for batch_num in range(num_batches):
+                    start_idx = batch_num * batch_size
+                    end_idx = min(start_idx + batch_size, total_items_to_evaluate)
+                    batch_items = items_to_evaluate[start_idx:end_idx]
+                    
+                    self._log_info(f"Evaluating batch {batch_num+1}/{num_batches} with {len(batch_items)} items", context)
+                    
+                    # Process batch
+                    batch_results, batch_success, batch_failed = await self._evaluate_items_batch(
+                        context=context,
+                        items=batch_items,
+                        data_type=data_type,
+                        batch_num=batch_num,
+                        total_batches=num_batches
+                    )
+                    
+                    # Add results to overall collection
+                    evaluated_items.extend(batch_results)
+                    items_evaluated_count += batch_success
+                    items_failed_evaluation += batch_failed
+                    
+                    # Update progress
+                    batch_progress = (batch_num + 1) / num_batches
+                    context.update_stage_progress(batch_progress, f"Evaluated batch {batch_num+1}/{num_batches}")
+                    
+            else:
+                # --- Evaluate Items Iteratively without batching ---
+                evaluated_items = []
+                for i, item in enumerate(items_to_evaluate):
+                    if not isinstance(item, dict):
+                        self._log_warning(f"Skipping invalid item (not a dict) at index {i}: {item}", context)
+                        items_failed_evaluation += 1
+                        continue
 
-            # --- Evaluate Items Iteratively ---
-            evaluated_items = []
-            for i, item in enumerate(items_to_evaluate):
-                if not isinstance(item, dict):
-                    self._log_warning(f"Skipping invalid item (not a dict) at index {i}: {item}", context)
-                    items_failed_evaluation += 1
-                    continue
+                    self._log_debug(f"Evaluating {data_type} item {i+1}/{total_items_to_evaluate} (ID: {item.get('id', 'N/A')})...", context)
+                    try:
+                        evaluated_item = await self._evaluate_single_item_llm(context, item, data_type)
+                        evaluated_items.append(evaluated_item)
+                        items_evaluated_count += 1
+                    except Exception as e:
+                        self._log_error(f"Failed to evaluate {data_type} item (ID: {item.get('id', 'N/A')}): {e}", context, exc_info=False)
+                        items_failed_evaluation += 1
+                        # Keep item in list but mark as failed
+                        item["_evaluation_error"] = str(e)
+                        evaluated_items.append(item)
 
-                self._log_debug(f"Evaluating {data_type} item {i+1}/{total_items_to_evaluate} (ID: {item.get('id', 'N/A')})...", context)
-                try:
-                    evaluated_item = await self._evaluate_single_item_llm(context, item, data_type)
-                    evaluated_items.append(evaluated_item)
-                    items_evaluated_count += 1
-                except Exception as e:
-                    self._log_error(f"Failed to evaluate {data_type} item (ID: {item.get('id', 'N/A')}): {e}", context, exc_info=False)
-                    items_failed_evaluation += 1
-                    # Keep item in list but mark as failed
-                    item["_evaluation_error"] = str(e)
-                    evaluated_items.append(item)
-
-                # Update progress
-                context.update_stage_progress((i + 1) / total_items_to_evaluate)
+                    # Update progress
+                    context.update_stage_progress((i + 1) / total_items_to_evaluate)
 
             # --- Store evaluated items in context using the enhanced method ---
             self._store_data(context, data_type, evaluated_items)
@@ -123,6 +161,50 @@ class EvaluatorAgent(BaseAgent):
         except Exception as e:
             self._log_error(f"Evaluation phase failed: {str(e)}", context, exc_info=True)
             raise  # Re-raise to fail the stage
+
+    async def _evaluate_items_batch(self,
+                                  context: ProcessingContext,
+                                  items: List[Dict[str, Any]],
+                                  data_type: str,
+                                  batch_num: int,
+                                  total_batches: int) -> tuple:
+        """
+        Evaluate a batch of items.
+        
+        Returns:
+            Tuple of (evaluated_items, success_count, failure_count)
+        """
+        batch_size = len(items)
+        batch_succeeded = 0
+        batch_failed = 0
+        batch_results = []
+        
+        item_name = data_type.rstrip('s')  # Get singular name
+        
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                self._log_warning(f"Batch {batch_num+1}: Skipping invalid item (not a dict) at index {i}", context)
+                batch_failed += 1
+                continue
+                
+            # Update more granular progress
+            batch_item_progress = (batch_num + (i + 1) / batch_size) / total_batches
+            if (i % 5) == 0:  # Update every 5 items to avoid too many updates
+                progress_msg = f"Batch {batch_num+1}/{total_batches}: Item {i+1}/{batch_size}"
+                context.update_stage_progress(batch_item_progress, progress_msg)
+                
+            try:
+                evaluated_item = await self._evaluate_single_item_llm(context, item, data_type)
+                batch_results.append(evaluated_item)
+                batch_succeeded += 1
+            except Exception as e:
+                self._log_error(f"Failed to evaluate {item_name} (ID: {item.get('id', 'N/A')}): {e}", context, exc_info=False)
+                batch_failed += 1
+                # Keep item but mark as failed
+                item["_evaluation_error"] = str(e)
+                batch_results.append(item)
+                
+        return batch_results, batch_succeeded, batch_failed
 
     def _get_evidence_text(self, context: ProcessingContext, item: Dict[str, Any], max_length=1000) -> str:
         """Retrieve and concatenate evidence text for an item."""
@@ -161,6 +243,10 @@ class EvaluatorAgent(BaseAgent):
                         break
         
         if not evidence_texts:
+            # Fallback if no evidence links - try to get relevant text directly from the item
+            for field in ["description", "text", "evidence_text"]:
+                if field in item and item[field]:
+                    return f"Item text: {item[field][:max_length]}"
             return "No specific evidence text found or linked for this item."
             
         return "\n".join(evidence_texts)
@@ -193,6 +279,7 @@ class EvaluatorAgent(BaseAgent):
         if assessment_type == "extract":  # Action Items
             evaluation_properties["evaluated_priority"] = {"type": "string", "enum": ["high", "medium", "low"], "description": "Re-assessed priority."}
             evaluation_properties["is_actionable"] = {"type": "boolean", "description": "Is this item clear, specific, and actionable?"}
+            evaluation_properties["evaluated_deadline"] = {"type": "string", "description": "Normalized deadline or timeframe if present."}
             required_fields.extend(["evaluated_priority", "is_actionable"])
         elif assessment_type == "assess":  # Issues
             evaluation_properties["evaluated_severity"] = {"type": "string", "enum": ["critical", "high", "medium", "low"], "description": "Re-assessed severity based on evidence and impact."}
@@ -383,15 +470,28 @@ Output Format: Respond only with a valid JSON object matching this schema:
         if assessment_type == "assess":
             # Count issues by severity
             severity_counts = {}
+            category_counts = {}
             for item in items:
                 severity = item.get("evaluated_severity", item.get("severity", "unknown"))
                 severity_counts[severity] = severity_counts.get(severity, 0) + 1
+                
+                category = item.get("category", "uncategorized")
+                category_counts[category] = category_counts.get(category, 0) + 1
+                
             stats["severity_counts"] = severity_counts
+            stats["category_counts"] = category_counts
+            
+            # Calculate critical+high percentage
+            total = sum(severity_counts.values())
+            if total > 0:
+                critical_high = severity_counts.get("critical", 0) + severity_counts.get("high", 0)
+                stats["critical_high_percentage"] = round((critical_high / total) * 100, 1)
             
         elif assessment_type == "extract":
             # Count action items by priority and owner
             priority_counts = {}
             owner_counts = {}
+            has_dates = 0
             for item in items:
                 priority = item.get("evaluated_priority", item.get("priority", "unknown"))
                 priority_counts[priority] = priority_counts.get(priority, 0) + 1
@@ -399,8 +499,14 @@ Output Format: Respond only with a valid JSON object matching this schema:
                 owner = item.get("owner", "unassigned")
                 owner_counts[owner] = owner_counts.get(owner, 0) + 1
                 
+                # Count items with dates
+                if item.get("due_date") or item.get("evaluated_deadline"):
+                    has_dates += 1
+                
             stats["priority_counts"] = priority_counts
             stats["owner_counts"] = owner_counts
+            stats["items_with_dates"] = has_dates
+            stats["items_with_dates_percentage"] = round((has_dates / len(items)) * 100, 1) if items else 0
             
         elif assessment_type == "distill":
             # Count key points by importance and topic
