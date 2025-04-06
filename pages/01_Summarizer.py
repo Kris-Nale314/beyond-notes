@@ -5,6 +5,7 @@ import asyncio
 import logging
 import json
 import time
+import uuid
 from pathlib import Path
 from datetime import datetime
 
@@ -58,7 +59,7 @@ try:
     logger.info(f"Available assessment IDs: {config_ids}")
     
     # Check for base distill assessment
-    base_distill_id = "base_distill_summary_v1"  
+    base_distill_id = "base_distill_summary_v1"  # Use your actual base distill ID
     if base_distill_id in config_ids:
         logger.info(f"✅ Base distill config '{base_distill_id}' found")
     else:
@@ -76,109 +77,317 @@ st.set_page_config(
     layout="wide",
 )
 
-# CSS styles
+# Enhanced CSS styles with improved spacing, transitions, and visual hierarchy
 st.markdown("""
 <style>
-    /* Main header */
+    /* --- Main Layout --- */
     .main-header {
         font-size: 2.5rem;
         font-weight: 700;
         margin-bottom: 0.5rem;
+        color: white;
+        padding: 0.5rem 0;
     }
     
     .subheader {
         font-size: 1.1rem;
         opacity: 0.8;
-        margin-bottom: 2rem;
+        margin-bottom: 2.5rem;
+        font-weight: 300;
     }
     
-    /* Section headers with numbers */
+    /* --- Section Headers with Numbers --- */
     .section-header {
-        font-size: 1.5rem;
+        font-size: 1.6rem;
         font-weight: 600;
-        margin-top: 2rem;
-        margin-bottom: 1rem;
+        margin: 2.5rem 0 1.5rem 0;
         display: flex;
         align-items: center;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     }
     
     .section-number {
         display: inline-flex;
         justify-content: center;
         align-items: center;
-        width: 36px;
-        height: 36px;
+        width: 38px;
+        height: 38px;
         background-color: #2196F3;
         color: white;
         border-radius: 50%;
         text-align: center;
-        margin-right: 10px;
+        margin-right: 12px;
         font-weight: 600;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
     }
     
-    /* Document metadata */
+    /* --- Document Preview --- */
     .document-meta {
         background-color: rgba(0, 0, 0, 0.2);
-        border-radius: 6px;
-        padding: 1rem;
+        border-radius: 10px;
+        padding: 1.5rem;
         margin-top: 1rem;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
     }
     
     .document-meta-label {
         font-size: 0.9rem;
         opacity: 0.7;
-        margin-bottom: 0.25rem;
+        margin-bottom: 0.3rem;
+        font-weight: 500;
     }
     
     .document-meta-value {
         font-weight: 500;
+        font-size: 1.1rem;
+        margin-bottom: 1rem;
     }
     
-    /* Progress status */
+    /* --- Progress Status --- */
+    .progress-container {
+        background-color: rgba(0, 0, 0, 0.1);
+        border-radius: 8px;
+        padding: 1.2rem;
+        margin: 1rem 0;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .progress-stage {
+        margin-top: 0.8rem;
+        font-size: 1.1rem;
+        font-weight: 500;
+    }
+    
+    .progress-message {
+        opacity: 0.8;
+        margin-top: 0.3rem;
+        font-size: 0.95rem;
+    }
+    
+    /* Custom progress bar */
     .stProgress > div > div > div > div {
         background-color: #2196F3;
+        background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.15) 50%, rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent);
+        background-size: 40px 40px;
+        animation: progress-bar-stripes 2s linear infinite;
     }
     
-    /* Format selection cards */
+    @keyframes progress-bar-stripes {
+        0% {background-position: 40px 0;}
+        100% {background-position: 0 0;}
+    }
+    
+    /* --- Enhanced Radio Buttons --- */
+    .format-radio {
+        margin: 1.5rem 0;
+    }
+    
     .format-option {
-        background-color: rgba(0, 0, 0, 0.2);
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        background-color: rgba(0, 0, 0, 0.1);
         border-radius: 8px;
-        padding: 1rem;
+        padding: 0.7rem 1rem;
         margin-bottom: 0.75rem;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        display: flex;
+        align-items: center;
         transition: all 0.2s ease;
     }
     
     .format-option:hover {
         background-color: rgba(33, 150, 243, 0.1);
         border-color: rgba(33, 150, 243, 0.3);
+        transform: translateY(-1px);
     }
     
     .format-option.selected {
         background-color: rgba(33, 150, 243, 0.15);
         border-color: #2196F3;
+        box-shadow: 0 2px 6px rgba(33, 150, 243, 0.2);
+    }
+    
+    .format-icon {
+        margin-right: 0.75rem;
+        opacity: 0.9;
+        flex-shrink: 0;
+    }
+    
+    .format-content {
+        flex-grow: 1;
     }
     
     .format-name {
         font-weight: 600;
-        margin-bottom: 0.25rem;
+        margin-bottom: 0.2rem;
+        font-size: 1rem;
+        color: white;
     }
     
     .format-desc {
-        font-size: 0.9rem;
-        opacity: 0.8;
+        font-size: 0.85rem;
+        opacity: 0.7;
+        line-height: 1.4;
     }
     
-    /* Summary container */
+    /* --- Summary Results --- */
     .summary-container {
         margin: 1.5rem 0;
+        animation: fadeIn 0.5s ease;
     }
     
-    /* Download buttons container */
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .action-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background-color: rgba(33, 150, 243, 0.1);
+        color: white;
+        border: 1px solid rgba(33, 150, 243, 0.3);
+        border-radius: 6px;
+        padding: 0.6rem 1.2rem;
+        font-size: 0.9rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        margin-right: 0.5rem;
+        margin-bottom: 0.5rem;
+        text-decoration: none;
+    }
+    
+    .action-button:hover {
+        background-color: rgba(33, 150, 243, 0.25);
+        border-color: rgba(33, 150, 243, 0.5);
+        transform: translateY(-1px);
+    }
+    
+    .action-button i {
+        margin-right: 0.5rem;
+    }
+    
+    .action-container {
+        margin: 1.5rem 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+    
+    /* --- Download/Copy Buttons --- */
     .download-container {
         margin-top: 1.5rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.7rem;
+    }
+    
+    /* --- General Button Improvements --- */
+    .stButton > button {
+        font-weight: 500;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s ease;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+    
+    .stButton > button[data-baseweb="button"] {
+        background-color: #2196F3;
+    }
+    
+    /* --- Statistics Display --- */
+    .stats-container {
+        background-color: rgba(0, 0, 0, 0.2);
+        border-radius: 8px;
+        padding: 1.2rem;
+        margin-top: 2rem;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .stat-item {
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .stat-value {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin-bottom: 0.3rem;
+    }
+    
+    .stat-label {
+        font-size: 0.9rem;
+        opacity: 0.7;
+    }
+    
+    /* --- Copy Feedback --- */
+    .copy-feedback {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background-color: rgba(0, 0, 0, 0.8);
+        color: white;
+        padding: 1rem 2rem;
+        border-radius: 6px;
+        z-index: 1000;
+        animation: fadeInOut 1.5s ease forwards;
+    }
+    
+    @keyframes fadeInOut {
+        0% { opacity: 0; }
+        20% { opacity: 1; }
+        80% { opacity: 1; }
+        100% { opacity: 0; }
+    }
+    
+    /* Hide our summarize-again button visually */
+    div[data-testid="stButton"] button:has(div:contains("Summarize Again")) {
+        display: none !important;
+    }
+    
+    /* --- Responsive Adjustments --- */
+    @media (max-width: 768px) {
+        .stats-container {
+            grid-template-columns: 1fr 1fr;
+        }
     }
 </style>
+
+<!-- SVG Icons for buttons and formats -->
+<svg style="display:none;">
+    <symbol id="icon-copy" viewBox="0 0 24 24">
+        <path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z"/>
+    </symbol>
+    <symbol id="icon-download" viewBox="0 0 24 24">
+        <path d="M19 9H15V3H9V9H5L12 16L19 9ZM5 18V20H19V18H5Z"/>
+    </symbol>
+    <symbol id="icon-executive" viewBox="0 0 24 24">
+        <path d="M19 3H5C3.9 3 3 3.9 3 5V19C3 20.1 3.9 21 5 21H19C20.1 21 21 20.1 21 19V5C21 3.9 20.1 3 19 3ZM9 17H7V10H9V17ZM13 17H11V7H13V17ZM17 17H15V13H17V17Z"/>
+    </symbol>
+    <symbol id="icon-comprehensive" viewBox="0 0 24 24">
+        <path d="M3 13H5V11H3V13ZM3 17H5V15H3V17ZM3 9H5V7H3V9ZM7 13H21V11H7V13ZM7 17H21V15H7V17ZM7 7V9H21V7H7Z"/>
+    </symbol>
+    <symbol id="icon-bullets" viewBox="0 0 24 24">
+        <path d="M4 10.5C3.17 10.5 2.5 11.17 2.5 12C2.5 12.83 3.17 13.5 4 13.5C4.83 13.5 5.5 12.83 5.5 12C5.5 11.17 4.83 10.5 4 10.5ZM4 4.5C3.17 4.5 2.5 5.17 2.5 6C2.5 6.83 3.17 7.5 4 7.5C4.83 7.5 5.5 6.83 5.5 6C5.5 5.17 4.83 4.5 4 4.5ZM4 16.5C3.17 16.5 2.5 17.18 2.5 18C2.5 18.82 3.18 19.5 4 19.5C4.82 19.5 5.5 18.82 5.5 18C5.5 17.18 4.83 16.5 4 16.5ZM7 19H21V17H7V19ZM7 13H21V11H7V13ZM7 5V7H21V5H7Z"/>
+    </symbol>
+    <symbol id="icon-narrative" viewBox="0 0 24 24">
+        <path d="M4 6H2V20C2 21.1 2.9 22 4 22H18V20H4V6ZM20 2H8C6.9 2 6 2.9 6 4V16C6 17.1 6.9 18 8 18H20C21.1 18 22 17.1 22 16V4C22 2.9 21.1 2 20 2ZM19 11H9V9H19V11ZM15 15H9V13H15V15ZM19 7H9V5H19V7Z"/>
+    </symbol>
+    <symbol id="icon-summarize-again" viewBox="0 0 24 24">
+        <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4C7.58 4 4 7.58 4 12C4 16.42 7.58 20 12 20C15.73 20 18.84 17.45 19.73 14H17.65C16.83 16.33 14.61 18 12 18C8.69 18 6 15.31 6 12C6 8.69 8.69 6 12 6C13.66 6 15.14 6.69 16.22 7.78L13 11H20V4L17.65 6.35Z"/>
+    </symbol>
+</svg>
 """, unsafe_allow_html=True)
 
 def initialize_page():
@@ -205,6 +414,9 @@ def initialize_page():
         
     if "selected_format" not in st.session_state:
         st.session_state.selected_format = "executive"
+    
+    if "show_copy_feedback" not in st.session_state:
+        st.session_state.show_copy_feedback = False
     
     logger.info("Session state initialized")
 
@@ -253,8 +465,13 @@ def progress_callback(progress, data):
         st.session_state.progress_message = data
 
 def render_pipeline_status():
-    """Display the current pipeline status."""
+    """Display the current pipeline status with enhanced visuals."""
     progress_value = float(st.session_state.get("current_progress", 0.0))
+    
+    # Progress container with better styling
+    st.markdown('<div class="progress-container">', unsafe_allow_html=True)
+    
+    # Enhanced progress bar
     progress_bar = st.progress(progress_value)
     
     # Current stage and progress message
@@ -262,9 +479,11 @@ def render_pipeline_status():
     progress_message = st.session_state.get("progress_message", "Waiting to start...")
     
     if current_stage:
-        st.write(f"**Current Stage:** {current_stage.replace('_', ' ').title()}")
+        st.markdown(f'<div class="progress-stage">{current_stage.replace("_", " ").title()}</div>', unsafe_allow_html=True)
     
-    st.caption(progress_message)
+    st.markdown(f'<div class="progress-message">{progress_message}</div>', unsafe_allow_html=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
     
     # Show detailed stage information if available
     stages_info = st.session_state.get("stages_info", {})
@@ -293,7 +512,7 @@ def render_pipeline_status():
                     st.markdown(f"`{status.upper()}`")
 
 def display_document_preview(document):
-    """Display a preview of the loaded document."""
+    """Display a preview of the loaded document with enhanced styling."""
     logger.info(f"Displaying preview for document: {document.filename}")
     
     col1, col2 = st.columns([2, 1])
@@ -328,50 +547,96 @@ def display_document_preview(document):
         st.markdown('</div>', unsafe_allow_html=True)
 
 def select_summary_format():
-    """Let the user select a summary format."""
-    # Format options with descriptions
+    """Enhanced radio buttons for format selection."""
+    # Format options with descriptions and icons
     format_options = {
-        "executive": "Very concise overview focusing on key findings, decisions, and implications.",
-        "comprehensive": "Detailed summary with supporting information and context.",
-        "bullet_points": "Key points organized in an easy-to-scan bullet list format.",
-        "narrative": "Flowing narrative that preserves the document's natural story."
+        "executive": {
+            "desc": "Very concise overview focusing on key findings and decisions.",
+            "icon": "#icon-executive"
+        },
+        "comprehensive": {
+            "desc": "Detailed summary with supporting information and context.",
+            "icon": "#icon-comprehensive"
+        },
+        "bullet_points": {
+            "desc": "Key points organized in an easy-to-scan bullet list format.",
+            "icon": "#icon-bullets"
+        },
+        "narrative": {
+            "desc": "Flowing narrative that preserves the document's natural story.",
+            "icon": "#icon-narrative"
+        }
     }
     
     # Get current selection
-    selected_format = st.session_state.get("selected_format", "comprehensive")
+    current_format = st.session_state.get("selected_format", "executive")
     
-    # Display format selection using radio buttons with custom formatting
+    # Display format selection header
     st.write("### Select Summary Format")
     
-    # Create placeholders for radio buttons with custom styling
-    for format_key, description in format_options.items():
-        # Format display name
-        format_display = format_key.replace("_", " ").title()
-        
-        # Check if this format is selected
+    # Use a standard radio component but visually hide it
+    selected_format = st.radio(
+        "Summary format",
+        options=list(format_options.keys()),
+        index=list(format_options.keys()).index(current_format),
+        format_func=lambda x: x.replace("_", " ").title(),
+        label_visibility="collapsed",
+        horizontal=True
+    )
+    
+    # Display enhanced radio options
+    st.markdown('<div class="format-radio">', unsafe_allow_html=True)
+    
+    for format_key, format_data in format_options.items():
+        # Determine if this format is selected
         is_selected = format_key == selected_format
         selected_class = "selected" if is_selected else ""
         
-        # Create styled container
+        # Format display name
+        format_display = format_key.replace("_", " ").title()
+        
+        # Create styled radio option
         format_html = f"""
-        <div class="format-option {selected_class}">
-            <div class="format-name">{format_display}</div>
-            <div class="format-desc">{description}</div>
+        <div class="format-option {selected_class}" onclick="document.getElementById('radio_{format_key}').click()">
+            <svg class="format-icon" width="24" height="24">
+                <use xlink:href="{format_data['icon']}"></use>
+            </svg>
+            <div class="format-content">
+                <div class="format-name">{format_display}</div>
+                <div class="format-desc">{format_data['desc']}</div>
+            </div>
         </div>
         """
         
-        # Use columns to create the effect of a selectable card
-        col1, col2 = st.columns([0.1, 0.9])
-        with col1:
-            is_checked = st.radio("", [True], key=f"radio_{format_key}", label_visibility="collapsed") if format_key == selected_format else st.radio("", [False], key=f"radio_{format_key}", label_visibility="collapsed")
-            if is_checked and format_key != selected_format:
-                st.session_state.selected_format = format_key
-                logger.info(f"Format selection changed to: {format_key}")
-                st.rerun()
-        with col2:
-            st.markdown(format_html, unsafe_allow_html=True)
+        st.markdown(format_html, unsafe_allow_html=True)
     
-    logger.info(f"Selected format: {selected_format}")
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Add JavaScript to handle clicking on our custom radio options
+    # Note: We use a hidden Streamlit radio button for state management
+    radio_js = """
+    <script>
+    // Create hidden radio buttons for each format
+    document.addEventListener('DOMContentLoaded', function() {
+        const formatKeys = ['executive', 'comprehensive', 'bullet_points', 'narrative'];
+        formatKeys.forEach(key => {
+            const radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.id = 'radio_' + key;
+            radio.style.display = 'none';
+            radio.name = 'custom_format_radio';
+            document.body.appendChild(radio);
+        });
+    });
+    </script>
+    """
+    st.markdown(radio_js, unsafe_allow_html=True)
+    
+    # Update session state if changed
+    if selected_format != current_format:
+        logger.info(f"Format selection changed to: {selected_format}")
+        st.session_state.selected_format = selected_format
+    
     return selected_format
 
 async def process_document(document, assessment_id, options):
@@ -420,7 +685,7 @@ async def process_document(document, assessment_id, options):
         return None
 
 def display_summary_result(result, format_type):
-    """Display the summary result using our renderer."""
+    """Display the summary result with enhanced styling and additional functionality."""
     logger.info(f"Displaying summary result with format: {format_type}")
     
     try:
@@ -428,12 +693,155 @@ def display_summary_result(result, format_type):
         logger.info("Generating HTML with summary renderer...")
         html_content = render_summary(result, format_type)
         
-        # Display the summary in Streamlit
+        # Display the summary in Streamlit with better container
         st.markdown('<div class="summary-container">', unsafe_allow_html=True)
         st.markdown(html_content, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Download options
+        # Add action buttons
+        st.markdown('<div class="action-container">', unsafe_allow_html=True)
+        
+        # Get summary text and statistics
+        summary_text = result.get("result", {}).get("summary", "")
+        summary_stats = result.get("result", {}).get("statistics", {})
+        
+        # Generate a unique ID for this summary
+        summary_id = f"summary_{uuid.uuid4().hex[:8]}"
+        
+        # Store the summary text in a hidden element
+        st.markdown(f'<div id="{summary_id}" style="display:none;">{summary_text}</div>', unsafe_allow_html=True)
+        
+        # Copy button with the ID approach
+        if summary_text:
+            copy_button_html = f"""
+            <button class="action-button" onclick="copyTextById('{summary_id}')">
+                <svg width="16" height="16">
+                    <use xlink:href="#icon-copy"></use>
+                </svg>
+                Copy Summary
+            </button>
+            """
+            st.markdown(copy_button_html, unsafe_allow_html=True)
+            
+            # Add JavaScript for clipboard functionality
+            clipboard_js = """
+            <script>
+            function copyTextById(elementId) {
+                const text = document.getElementById(elementId).innerText;
+                
+                // Create temporary element
+                const el = document.createElement('textarea');
+                el.value = text;
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+                
+                // Show feedback
+                const feedback = document.createElement('div');
+                feedback.className = 'copy-feedback';
+                feedback.textContent = 'Summary copied to clipboard!';
+                document.body.appendChild(feedback);
+                
+                // Remove feedback after animation
+                setTimeout(() => {
+                    document.body.removeChild(feedback);
+                }, 1500);
+            }
+            </script>
+            """
+            st.markdown(clipboard_js, unsafe_allow_html=True)
+        
+        # Summarize Again button
+        if summary_text:
+            # Create a hidden button that will handle the actual functionality
+            if st.button("Summarize Again", key="summarize-again-button"):
+                logger.info("Summarize Again button clicked")
+                
+                # Create a new document from the summary
+                temp_dir = AppPaths.get_temp_path("summaries")
+                temp_dir.mkdir(exist_ok=True, parents=True)
+                temp_file_path = temp_dir / "previous_summary.txt"
+                
+                with open(temp_file_path, "w", encoding="utf-8") as f:
+                    f.write(summary_text)
+                
+                # Create document from file
+                try:
+                    document = Document.from_file(temp_file_path)
+                    st.session_state.document = document
+                    st.session_state.document_loaded = True
+                    st.session_state.processing_started = False
+                    st.session_state.processing_complete = False
+                    st.rerun()
+                except Exception as e:
+                    logger.error(f"Error creating document from summary: {e}")
+                    st.error("Could not create a new summary from the current one.")
+            
+            # Visual button that will click the hidden button
+            summarize_again_html = f"""
+            <button class="action-button" onclick="document.querySelector('button:has(div:contains(\"Summarize Again\"))').click()">
+                <svg width="16" height="16">
+                    <use xlink:href="#icon-summarize-again"></use>
+                </svg>
+                Summarize Again
+            </button>
+            """
+            st.markdown(summarize_again_html, unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Display enhanced statistics if available
+        if summary_stats:
+            # Get key statistics
+            original_words = summary_stats.get("original_word_count", 0)
+            summary_words = summary_stats.get("summary_word_count", 0)
+            topics_count = summary_stats.get("topics_covered", 0)
+            
+            # Calculate compression ratio
+            compression_ratio = 0
+            if original_words > 0 and summary_words > 0:
+                compression_ratio = (summary_words / original_words) * 100
+            
+            # Display in a nicely formatted grid
+            st.markdown('<div class="stats-container">', unsafe_allow_html=True)
+            
+            # Original word count
+            st.markdown(f"""
+            <div class="stat-item">
+                <div class="stat-value">{original_words:,}</div>
+                <div class="stat-label">Original Words</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Summary word count
+            st.markdown(f"""
+            <div class="stat-item">
+                <div class="stat-value">{summary_words:,}</div>
+                <div class="stat-label">Summary Words</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Compression ratio
+            st.markdown(f"""
+            <div class="stat-item">
+                <div class="stat-value">{compression_ratio:.1f}%</div>
+                <div class="stat-label">Compression Ratio</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Topics count
+            if topics_count > 0:
+                st.markdown(f"""
+                <div class="stat-item">
+                    <div class="stat-value">{topics_count}</div>
+                    <div class="stat-label">Topics Covered</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Download options with improved styling
         st.markdown('<div class="download-container">', unsafe_allow_html=True)
         
         # Generate report markdown
@@ -443,9 +851,9 @@ def display_summary_result(result, format_type):
         col1, col2 = st.columns(2)
         
         with col1:
-            # Download as markdown
-            st.download_button(
-                "Download as Markdown",
+            # Download as markdown with icon
+            download_md_button = st.download_button(
+                "⬇️ Download as Markdown",
                 data=report_md,
                 file_name=f"summary_{timestamp}.md",
                 mime="text/markdown",
@@ -453,10 +861,10 @@ def display_summary_result(result, format_type):
             )
         
         with col2:
-            # Download as JSON
+            # Download as JSON with icon
             json_str = json.dumps(result, indent=2)
-            st.download_button(
-                "Download Raw Data",
+            download_json_button = st.download_button(
+                "⬇️ Download Raw Data",
                 data=json_str,
                 file_name=f"summary_data_{timestamp}.json",
                 mime="application/json",
@@ -483,9 +891,9 @@ def main():
     # Initialize page
     initialize_page()
     
-    # Header
+    # Header with enhanced styling
     st.markdown('<div class="main-header">📄 Document Summarizer</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subheader">Transform documents into clear, readable summaries</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subheader">Transform documents into clear, readable summaries with our AI system</div>', unsafe_allow_html=True)
     
     # Document upload section
     st.markdown('<div class="section-header"><span class="section-number">1</span>Upload Document</div>', unsafe_allow_html=True)
@@ -506,7 +914,7 @@ def main():
     if st.session_state.document_loaded:
         st.markdown('<div class="section-header"><span class="section-number">2</span>Configure Summary</div>', unsafe_allow_html=True)
         
-        # Format selection
+        # Format selection with enhanced visuals
         selected_format = select_summary_format()
         
         # Model settings in expander
@@ -529,7 +937,7 @@ def main():
         col1, col2 = st.columns([3, 1])
         with col1:
             if not st.session_state.processing_started:
-                if st.button("Generate Summary", type="primary", use_container_width=True):
+                if st.button("✨ Generate Summary", type="primary", use_container_width=True):
                     logger.info("Generate Summary button clicked")
                     
                     # Create summary options
@@ -567,7 +975,7 @@ def main():
                     st.rerun()
         
         with col2:
-            if st.button("Reset", use_container_width=True):
+            if st.button("↺ Reset", use_container_width=True):
                 logger.info("Reset button clicked")
                 
                 # Reset session state
@@ -588,7 +996,7 @@ def main():
         if not st.session_state.processing_complete:
             logger.info("Processing in progress, showing status...")
             
-            # Show progress
+            # Show enhanced progress tracking
             render_pipeline_status()
             
             # Process document if not already processing
@@ -621,7 +1029,7 @@ def main():
                     # This rerun will either show results or error message
                     st.rerun()
         
-        # Results section
+        # Results section with enhanced display
         if st.session_state.processing_complete:
             st.markdown('<div class="section-header"><span class="section-number">4</span>Summary</div>', unsafe_allow_html=True)
             
