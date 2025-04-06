@@ -1,74 +1,68 @@
 {
   "assessment_type": "distill",
   "assessment_id": "base_distill_summary_v1",
-  "version": "1.1",
-  "display_name": "Document Summarization",
-  "description": "Creates concise, structured summaries of document content",
-  
+  "version": "1.4",
+  "display_name": "Enhanced Transcript Summary",
+  "description": "Creates flowing, structured summaries of long-form transcripts using multi-agent orchestration",
+
   "output_definition": {
     "name": "summary",
-    "description": "A condensed version of the document that captures essential information",
-    
+    "description": "A flowing, coherent summary of the document that captures key information across meta chunks",
+
     "formats": {
       "executive": {
-        "description": "Very concise overview for executives",
+        "description": "Clear and compeling overview for quick understanding",
         "target_length": "5-10% of original",
-        "focus": "Critical decisions, key findings, actionable outcomes, and strategic implications"
+        "focus": "Key decisions, findings, and implications"
       },
       "comprehensive": {
-        "description": "Detailed summary with supporting information",
+        "description": "Detailed summary with contextual and supporting information",
         "target_length": "15-25% of original",
-        "focus": "All important points with contextual details and supporting evidence"
+        "focus": "All important points with necessary supporting context"
       },
       "bullet_points": {
-        "description": "Key points in bulleted list format",
+        "description": "Key points in organized bullet points format",
         "target_length": "10-15 key points",
-        "focus": "Discrete, important facts, findings, and action items categorized by topic"
+        "focus": "Facts, findings, and decisions by topic"
       },
       "narrative": {
-        "description": "Flowing narrative that preserves the document's story",
-        "target_length": "10-20% of original",
-        "focus": "Logical progression of ideas, arguments, and conclusions"
+        "description": "Narrative summary that flows like a story",
+        "target_length": "15-25% of original",
+        "focus": "Progression of discussion, logic, and conclusions"
       }
     },
-    
+
     "structure_options": {
       "topic_based": {
-        "description": "Organized by main topics discussed",
+        "description": "Organized by primary themes across the transcript",
         "elements": ["topic_title", "key_points", "details"]
       },
       "chronological": {
-        "description": "Follows the timeline of the document",
+        "description": "Maintains order of transcript discussion",
         "elements": ["timestamp", "event", "details"]
       },
       "speaker_based": {
-        "description": "Organized by participants' contributions",
+        "description": "Organized by speaker or role contributions",
         "elements": ["speaker", "key_points", "quotes"]
       },
       "decision_focused": {
-        "description": "Emphasizes decisions and agreements",
+        "description": "Highlights key decisions and rationale",
         "elements": ["decision", "context", "implications"]
       }
     }
   },
-  
+
   "extraction_criteria": {
     "importance_indicators": [
-      "Explicit importance statements ('key point', 'important to note', 'crucial to understand')",
-      "Decision language ('we decided', 'agreed to', 'conclusion is', 'the plan is')",
-      "Action items or commitments ('will do', 'responsible for', 'by [date]', 'assigned to')",
-      "Executive statements (CEO, director, or leader statements)",
-      "Numerical data (statistics, metrics, percentages, dollar amounts)",
-      "Problem-solution pairs (issue identified followed by resolution)",
-      "Consensus phrases ('everyone agreed', 'the team decided', 'we all concluded')",
-      "Contrast indicators ('however', 'although', 'despite', 'on the contrary')",
-      "Causal relationships ('because', 'therefore', 'as a result', 'consequently')",
-      "Summary statements ('to summarize', 'in conclusion', 'key takeaway', 'bottom line')",
-      "Questions followed by answers or resolutions",
-      "First and last statements in paragraphs or speaker turns",
-      "Repeated concepts, terminology, or themes",
-      "Emphasized text (if format shows emphasis like ALL CAPS, bold, italics, etc.)",
-      "Statements with strong certainty ('definitely', 'certainly', 'absolutely')"
+      "Explicit importance statements",
+      "Decision language",
+      "Action items or commitments",
+      "Numerical data and statistics",
+      "Problem-solution pairs",
+      "Consensus phrases",
+      "Causal relationships",
+      "Summary statements",
+      "First and last statements in meta chunks or speaker turns"
     ],
     "content_weighting": {
       "decisions": 1.8,
@@ -90,7 +84,7 @@
       "small_talk": 0.3
     }
   },
-  
+
   "workflow": {
     "enabled_stages": [
       "document_analysis",
@@ -103,15 +97,15 @@
       "review"
     ],
     "agent_instructions": {
-      "planner": "Thoroughly analyze the document to identify its structure, type, and purpose. Is it a meeting transcript, report, research paper, email thread, or other format? Identify the main topics, key participants, central questions, and the overall goals. Note the document's organization, writing style, and information density. Determine the most suitable summary structure based on document characteristics and user-selected format. Create specific extraction guidelines focused on capturing the most salient information given the document type, desired summary format, and user options. Prioritize finding decision points, conclusions, numerical data, action items, and explicit summaries within the text.",
+      "planner": "Analyze the transcript and document metadata to define extraction strategy. ICreate specific extraction guidelines focused on capturing the most important information. Note the document's organization, identify main topics, and determine the most suitable summary structure. Plan how to maintain the document's logical flow in the final summary.",
       
-      "extractor": "For each document chunk, identify and extract the most important information with precision. Use a two-pass approach: First, scan for explicit importance indicators (decisions, action items, conclusions, etc.). Second, identify implicitly important content based on context, uniqueness, and relevance to main themes. For each extraction, assign an importance score (1-10), categorize by topic or theme, note any speakers/sources, and preserve exact quotes for critical points. Distinguish between factual statements, opinions, and speculations. Look for relationships between points across the document. Extract numerical data with exactness, and identify problem-solution pairs. Favor specific, concrete information over vague statements.",
+      "extractor": "For each meta chunk, provide a clear and compeling summary of the discussion. Extract decisions, action items, and facts with attention to transitions. Preserve context and flow by noting cross-chunk relationships. Score content for importance and capture key speaker input when relevant.",
       
-      "aggregator": "Combine and consolidate extracted information from all chunks into a unified, coherent structure. Identify and merge duplicate or highly similar points while preserving nuance and detail. Group related information by themes, topics, or logical categories. Establish clear connections between related points, especially problem-solution relationships, cause-effect links, and decision-rationale pairs. Maintain proper chronology for sequential information. Ensure complete coverage of all major document sections, with balanced representation. Recognize when divergent viewpoints exist on the same topic and preserve important contrasts. Apply the content weighting system to prioritize information based on type and importance. Flag any potential inconsistencies or contradictions for evaluation.",
+      "aggregator": "Stitch mini-summaries into a continuous narrative. Remove redundant information, resolve cross-chunk references, and maintain consistency in terminology and style. Structure the output to reflect the selected summary format. Ensure logical coherence across large document sections.",
       
-      "evaluator": "Assess the accuracy, completeness, and balance of the aggregated summary. Verify that the summary captures all critical information without distortion or misrepresentation. Evaluate whether key decisions, findings, and action items are properly represented. Check for appropriate emphasis on the most important content. Ensure the summary maintains proper context and doesn't present information in a misleading way. Assess if the balance between topics accurately reflects their importance in the original document. Identify any significant gaps, redundancies, or imbalances in coverage. Score each section on completeness (1-10) and representativeness (1-10). Add confidence ratings for sections with potentially subjective interpretation.",
+      "evaluator": "Review the summary for accuracy, coverage, and consistency. Validate that key decisions, insights, and findings are well represented. Ensure clarity of message and flow. Rate each section's completeness and flag ambiguous or underspecified content.",
       
-      "formatter": "Format the summary according to the requested style (executive, comprehensive, bullet points, or narrative) with careful attention to structure, flow, and readability. For executive summaries, focus on decisions, implications, and actionable insights in extremely concise language. For comprehensive summaries, organize with clear hierarchical sections and include supporting context while maintaining brevity. For bullet points, ensure each point is independent, specific, and substantial, organized by topic with clear headings. For narrative summaries, create a cohesive flow with clear transitions between topics while maintaining the document's logical progression. In all formats, prioritize clarity and precision, use plain language, maintain consistent tense and voice, and ensure the summary can stand alone without requiring the original document. Include statistics about compression ratio and topics covered."
+      "formatter": "Render the summary per user-selected format and structure. For flowing narratives, ensure smooth transitions. For executive summaries, highlight key decisions. For bullets, group points by category. Maintain readability and independence from original document."
     },
     "stage_weights": {
       "document_analysis": 0.10,
@@ -124,11 +118,11 @@
       "review": 0.05
     }
   },
-  
+
   "output_format": {
     "sections": {
-      "executive": ["overview", "key_points", "decisions", "implications", "next_steps"],
-      "comprehensive": ["executive_summary", "context", "main_topics", "key_findings", "decisions", "supporting_details", "conclusions"],
+      "executive": ["overview", "key_points", "decisions", "implications"],
+      "comprehensive": ["executive_summary", "main_topics", "key_findings", "decisions", "conclusions"],
       "bullet_points": ["overview", "key_points_by_topic", "decisions", "action_items"],
       "narrative": ["introduction", "main_content", "conclusion"]
     },
@@ -139,93 +133,70 @@
       "narrative": "flowing_text_with_transitions"
     }
   },
-  
+
   "user_options": {
     "format": {
       "type": "select",
       "options": {
         "executive": "Very concise overview of main points (5-10% of original)",
-        "comprehensive": "Detailed summary with supporting information (15-25% of original)",
-        "bullet_points": "Key points in bullet list format (10-15 key points)",
-        "narrative": "Flowing narrative that preserves the document's story (10-20% of original)"
+        "comprehensive": "Detailed summary with supporting information (15-25%)",
+        "bullet_points": "Key points in bullet list format (10-15 items)",
+        "narrative": "Flowing narrative summary (10-20%)"
       },
       "default": "executive",
       "display_name": "Summary Format",
-      "description": "Style and format of the generated summary"
+      "description": "Style and layout of the summary"
     },
     "length": {
       "type": "select",
       "options": {
-        "brief": "Shortest possible summary capturing only essentials",
-        "standard": "Standard length appropriate for the format",
-        "detailed": "Longer summary with more supporting details"
+        "brief": "Minimal length for essentials",
+        "standard": "Standard summary length",
+        "detailed": "Longer format with more context"
       },
       "default": "standard",
       "display_name": "Summary Length",
-      "description": "Controls the length and detail level of the summary"
-    },
-    "focus_areas": {
-      "type": "multi_select",
-      "options": ["decisions", "action_items", "findings", "background", "methodology", "results", "recommendations", "discussions", "problems", "solutions"],
-      "default": [],
-      "display_name": "Focus Areas",
-      "description": "Optionally focus on specific aspects of the document (empty means balanced focus)"
-    },
-    "include_quotes": {
-      "type": "boolean",
-      "default": false,
-      "display_name": "Include Key Quotes",
-      "description": "Include direct quotes for important points"
+      "description": "How detailed the summary should be"
     },
     "structure_preference": {
       "type": "select",
       "options": {
-        "topic_based": "Organized by main topics discussed",
-        "chronological": "Follows the timeline of the document",
-        "speaker_based": "Organized by participants' contributions",
-        "decision_focused": "Emphasizes decisions and agreements"
+        "topic_based": "By major themes/topics",
+        "chronological": "Timeline of discussion",
+        "speaker_based": "By participants",
+        "decision_focused": "By decisions made"
       },
       "default": "topic_based",
       "display_name": "Structure Preference",
-      "description": "Organization structure for the summary"
+      "description": "How to organize the summary"
+    },
+    "include_quotes": {
+      "type": "boolean",
+      "default": false,
+      "display_name": "Include Quotes",
+      "description": "Include direct quotes for key points"
     }
   },
-  
+
   "output_schema": {
     "type": "object",
     "properties": {
-      "overview": {
-        "type": "string",
-        "description": "Brief overview of the entire document (1-3 sentences)"
-      },
-      "summary": {
-        "type": "string",
-        "description": "Main summary content formatted according to the requested style"
-      },
+      "overview": { "type": "string" },
+      "summary": { "type": "string" },
       "topics": {
         "type": "array",
         "items": {
           "type": "object",
           "properties": {
-            "topic": {
-              "type": "string",
-              "description": "Topic name or title"
-            },
+            "topic": { "type": "string" },
             "key_points": {
               "type": "array",
-              "items": {
-                "type": "string",
-                "description": "Key point related to this topic"
-              }
+              "items": { "type": "string" }
             },
-            "details": {
-              "type": "string",
-              "description": "Additional details about this topic"
-            },
+            "details": { "type": "string" },
             "importance": {
               "type": "string",
-              "enum": ["high", "medium", "low"],
-              "description": "Relative importance of this topic in the document"
+              "enum": ["high", "medium", "low"]
             }
           },
           "required": ["topic", "key_points", "importance"]
@@ -236,32 +207,16 @@
         "items": {
           "type": "object",
           "properties": {
-            "point": {
-              "type": "string",
-              "description": "Concise statement of a key point"
-            },
-            "topic": {
-              "type": "string",
-              "description": "Related topic or category"
-            },
-            "importance": {
-              "type": "string",
-              "enum": ["high", "medium", "low"],
-              "description": "Importance level of this point"
-            },
+            "point": { "type": "string" },
+            "topic": { "type": "string" },
+            "importance": { "type": "string", "enum": ["high", "medium", "low"] },
             "evidence": {
               "type": "array",
               "items": {
                 "type": "object",
                 "properties": {
-                  "text": {
-                    "type": "string",
-                    "description": "Source text supporting this point"
-                  },
-                  "chunk_index": {
-                    "type": "integer",
-                    "description": "Index of the chunk containing this evidence"
-                  }
+                  "text": { "type": "string" },
+                  "chunk_index": { "type": "integer" }
                 }
               }
             }
@@ -274,31 +229,16 @@
         "items": {
           "type": "object",
           "properties": {
-            "decision": {
-              "type": "string",
-              "description": "Decision that was made"
-            },
-            "context": {
-              "type": "string",
-              "description": "Context around the decision"
-            },
-            "implications": {
-              "type": "string",
-              "description": "Potential implications or next steps"
-            },
+            "decision": { "type": "string" },
+            "context": { "type": "string" },
+            "implications": { "type": "string" },
             "evidence": {
               "type": "array",
               "items": {
                 "type": "object",
                 "properties": {
-                  "text": {
-                    "type": "string",
-                    "description": "Source text supporting this decision"
-                  },
-                  "chunk_index": {
-                    "type": "integer",
-                    "description": "Index of the chunk containing this evidence"
-                  }
+                  "text": { "type": "string" },
+                  "chunk_index": { "type": "integer" }
                 }
               }
             }
@@ -311,79 +251,46 @@
         "items": {
           "type": "object",
           "properties": {
-            "action": {
-              "type": "string",
-              "description": "Action to be taken"
-            },
-            "owner": {
-              "type": "string",
-              "description": "Person or group responsible"
-            },
-            "timeline": {
-              "type": "string",
-              "description": "When the action should be completed"
-            }
+            "action": { "type": "string" },
+            "owner": { "type": "string" },
+            "timeline": { "type": "string" }
           },
           "required": ["action"]
         }
       },
-      "conclusions": {
-        "type": "string",
-        "description": "Overall conclusions or takeaways from the document"
-      },
+      "conclusions": { "type": "string" },
       "statistics": {
         "type": "object",
         "properties": {
-          "original_word_count": {
-            "type": "integer",
-            "description": "Word count of the original document"
-          },
-          "summary_word_count": {
-            "type": "integer",
-            "description": "Word count of the summary"
-          },
-          "compression_ratio": {
-            "type": "number",
-            "description": "Ratio of summary to original length (percentage)"
-          },
-          "topics_covered": {
-            "type": "integer",
-            "description": "Number of distinct topics covered"
-          },
-          "key_points_count": {
-            "type": "integer",
-            "description": "Number of key points identified"
-          },
-          "decisions_count": {
-            "type": "integer",
-            "description": "Number of decisions identified"
-          },
-          "action_items_count": {
-            "type": "integer",
-            "description": "Number of action items identified"
-          }
+          "original_word_count": { "type": "integer" },
+          "summary_word_count": { "type": "integer" },
+          "compression_ratio": { "type": "number" },
+          "topics_covered": { "type": "integer" },
+          "key_points_count": { "type": "integer" },
+          "decisions_count": { "type": "integer" },
+          "action_items_count": { "type": "integer" }
         }
       },
       "metadata": {
         "type": "object",
         "properties": {
-          "document_name": {"type": "string"},
-          "document_type": {"type": "string"},
-          "document_date": {"type": "string"},
-          "word_count": {"type": "integer"},
-          "processing_time": {"type": "number"},
-          "date_analyzed": {"type": "string"},
-          "assessment_type": {"type": "string"},
-          "user_options": {"type": "object"}
+          "document_name": { "type": "string" },
+          "document_type": { "type": "string" },
+          "document_date": { "type": "string" },
+          "word_count": { "type": "integer" },
+          "processing_time": { "type": "number" },
+          "date_analyzed": { "type": "string" },
+          "assessment_type": { "type": "string" },
+          "user_options": { "type": "object" }
         }
       }
     },
     "required": ["overview", "summary", "topics", "key_points", "statistics", "metadata"]
   },
-  
+
   "metadata": {
-    "created_date": "2025-03-31",
-    "last_modified_date": "2025-04-02",
+    "created_date": "2025-04-06",
+    "last_modified_date": "2025-04-06",
     "created_by": "System",
     "is_template": false,
     "base_type": "distill"
