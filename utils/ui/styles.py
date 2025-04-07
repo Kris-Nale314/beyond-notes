@@ -224,22 +224,54 @@ def get_issues_styles():
         color: rgba(255, 255, 255, 0.8);
     }
     
-    /* Recommendations section */
-    .recommendations-header {
-        font-size: 1rem;
-        font-weight: 500;
-        margin-top: 1rem;
-        margin-bottom: 0.5rem;
-        color: rgba(255, 255, 255, 0.9);
+    /* Terminal-like output styling for processing stages */
+    .stage-progress {
+        margin-bottom: 8px;
+        padding: 4px 8px;
+        border-radius: 4px;
     }
     
-    .recommendations-list {
-        margin: 0;
-        padding-left: 1.2rem;
+    .stage-message {
+        opacity: 0.8;
+        font-size: 0.9rem;
+        margin-left: 24px;
+        margin-top: 2px;
     }
     
-    .recommendations-list li {
-        margin-bottom: 0.5rem;
+    .completed-stage {
+        border-left: 3px solid #4CAF50;
+    }
+    
+    .running-stage {
+        border-left: 3px solid #2196F3;
+        background-color: rgba(33, 150, 243, 0.1);
+    }
+    
+    .failed-stage {
+        border-left: 3px solid #F44336;
+        background-color: rgba(244, 67, 54, 0.1);
+    }
+    
+    /* Copy button styling */
+    .copy-button {
+        background-color: rgba(33, 150, 243, 0.2);
+        border: 1px solid rgba(33, 150, 243, 0.5);
+        border-radius: 4px;
+        padding: 0.5rem 1rem;
+        color: white;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        transition: all 0.2s ease;
+    }
+    
+    .copy-button:hover {
+        background-color: rgba(33, 150, 243, 0.4);
+        transform: translateY(-1px);
+    }
+    
+    .copy-button svg {
+        margin-right: 0.5rem;
     }
 </style>
 """

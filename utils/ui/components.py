@@ -33,7 +33,7 @@ def display_document_preview(document):
             preview_text += "..."
         
         with st.expander("Document Content Preview", expanded=False):
-            st.text_area("", preview_text, height=200, disabled=True)
+            st.text_area("", preview_text, height=200, disabled=True, label_visibility="collapsed")
     
     with col2:
         st.markdown('<div class="document-meta">', unsafe_allow_html=True)

@@ -27,7 +27,7 @@ class EvaluatorAgent(BaseAgent):
     DEFAULT_EVALUATOR_TEMP = 0.2
     DEFAULT_EVALUATOR_TOKENS = 4000 # May need adjustment based on batch size and item complexity
     DEFAULT_OVERALL_ASSESSMENT_TEMP = 0.4
-    DEFAULT_OVERALL_ASSESSMENT_TOKENS = 1500
+    DEFAULT_OVERALL_ASSESSMENT_TOKENS = 4000
 
     def __init__(self, llm: CustomLLM, options: Optional[Dict[str, Any]] = None):
         """Initialize the EvaluatorAgent."""

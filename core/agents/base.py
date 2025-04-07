@@ -176,7 +176,7 @@ class BaseAgent(ABC):
         try:
             # Default LLM parameters from agent options or method kwargs
             llm_params = {
-                "max_tokens": self.options.get("max_tokens", 1500),
+                "max_tokens": self.options.get("max_tokens", 2500),
                 "temperature": self.options.get("temperature", 0.5),
                 **kwargs  # Allow overriding via direct call args
             }
@@ -225,7 +225,7 @@ class BaseAgent(ABC):
         
         try:
             llm_params = {
-                "max_tokens": self.options.get("max_structured_tokens", 2000),
+                "max_tokens": self.options.get("max_structured_tokens", 2500),
                 "temperature": self.options.get("structured_temperature", 0.2),
                 **kwargs
             }

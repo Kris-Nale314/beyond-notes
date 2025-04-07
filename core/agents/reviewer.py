@@ -144,7 +144,7 @@ If the output is excellent, say so, but still provide at least one suggestion fo
                 output_schema=review_output_schema,
                 context=context,
                 temperature=self.options.get("reviewer_temperature", 0.3),
-                max_tokens=self.options.get("reviewer_max_tokens", 2000)
+                max_tokens=self.options.get("reviewer_max_tokens", 6000)
             )
 
             # --- Process Review Results ---

@@ -151,8 +151,8 @@ Output Format: Respond only with the single, valid JSON object conforming to the
                 prompt=prompt,
                 output_schema=output_schema,
                 context=context,
-                temperature=self.options.get("formatter_temperature", 0.3),
-                max_tokens=self.options.get("formatter_max_tokens", 3500)
+                temperature=self.options.get("formatter_temperature", 0.5),
+                max_tokens=self.options.get("formatter_max_tokens", 4000)
             )
 
             # --- Post-processing & Validation ---

@@ -381,6 +381,7 @@ def main():
                     # This rerun will either show results or error message
                     st.rerun()
         
+       
         # Results section with enhanced display
         if st.session_state.processing_complete:
             section_header("Issue Assessment Results", 4)
@@ -389,11 +390,22 @@ def main():
                 logger.info("Displaying issues assessment results")
                 result = st.session_state.issues_result
                 
-                # Use our enhanced renderer
-                render_issues_result(result)
-                
-                # Add download options
-                st.markdown("### Download Options")
+                # Check for explicit error
+                if "error" in result and result["error"]:
+                    st.error(f"Error in assessment: {result['error']}")
+                    with st.expander("Show Error Details", expanded=True):
+                        st.json(result)
+                else:
+                    # Use our enhanced renderer
+                    render_issues_result(result)
+                    
+                    # Add download options
+                    st.markdown("### Download Options")
+                    # ... rest of the download options code
+
+
+
+            
                 
                 # Generate report markdown
                 report_md = format_assessment_report(result, "assess")
@@ -425,7 +437,7 @@ def main():
                 error_msg = "Processing completed but no issues assessment was generated. Please check the logs for details."
                 logger.error(error_msg)
                 st.error(error_msg)
-
+                
 if __name__ == "__main__":
     try:
         logger.info("Starting 02_Issues.py main execution")

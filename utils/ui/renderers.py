@@ -6,6 +6,8 @@ Handles formatting and display of assessment results.
 import streamlit as st
 import json
 from datetime import datetime
+import logging
+
 
 def render_assessment_result(result, assessment_type):
     """Render assessment result based on type."""
@@ -41,6 +43,25 @@ def render_summary_result(result, format_type=None):
 
 def render_issues_result(result):
     """Render issues assessment results using native Streamlit components."""
+    # First, log structure for debugging
+    logger = logging.getLogger("beyond-notes-issues")
+    logger.info(f"Result keys: {list(result.keys())}")
+    if "result" in result:
+        logger.info(f"Result.result keys: {list(result['result'].keys())}")
+    if "formatted" in result:
+        logger.info(f"Result.formatted keys: {list(result['formatted'].keys())}")
+    
+    # Check for formatter errors
+    formatter_errors = result.get("error") or result.get("formatter_warnings")
+    if formatter_errors:
+        st.error("The formatter encountered errors:")
+        st.code(formatter_errors)
+        
+        # Show raw data for debugging
+        with st.expander("Show Raw Result Data", expanded=True):
+            st.json(result)
+        return
+        
     # Extract data
     metadata = result.get("metadata", {})
     
@@ -50,6 +71,13 @@ def render_issues_result(result):
         issues = result["result"]["issues"]
     if not issues and "formatted" in result and "issues" in result["formatted"]:  
         issues = result["formatted"]["issues"]
+    # If still no issues found, try to extract structured content from raw text
+    if not issues and "result" in result:
+        result_content = result["result"]
+        if isinstance(result_content, str) and len(result_content) > 0:
+            st.markdown("## Results Text")
+            st.markdown(result_content)
+            return
     
     # Find executive summary
     executive_summary = result.get("executive_summary", "")
