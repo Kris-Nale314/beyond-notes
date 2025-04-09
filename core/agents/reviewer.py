@@ -1,33 +1,33 @@
-# core/agents/reviewer.py
 import logging
 import json
 from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
 
 # Import base class and context/LLM types
 from .base import BaseAgent
 from core.llm.customllm import CustomLLM
 from core.models.context import ProcessingContext
 
+logger = logging.getLogger(__name__)
+
 class ReviewerAgent(BaseAgent):
     """
     Performs a quality control review of the formatted output produced by
-    the FormatterAgent, checking for consistency, completeness, and alignment
-    with the assessment configuration. Provides feedback but does not modify
-    the formatted output directly.
+    the FormatterAgent, checking for consistency, completeness, and adherence
+    to the assessment configuration.
     
-    This enhanced implementation properly uses the BaseAgent methods for data
-    access and follows standardized patterns for working with ProcessingContext.
+    This implementation addresses truncation issues by using a "smart preview"
+    approach that preserves key information while staying within context windows.
     """
 
     def __init__(self, llm: CustomLLM, options: Optional[Dict[str, Any]] = None):
         """Initialize the ReviewerAgent."""
         super().__init__(llm, options)
-        # IMPORTANT: role must match the orchestrator mapping
         self.role = "reviewer"
         self.logger = logging.getLogger(f"core.agents.{self.__class__.__name__}")
-        self.logger.info(f"ReviewerAgent initialized.")
+        self.logger.info(f"ReviewerAgent initialized")
 
-    async def process(self, context: ProcessingContext) -> Optional[Dict[str, Any]]:
+    async def process(self, context: ProcessingContext) -> Dict[str, Any]:
         """
         Reviews the Formatter's output and stores feedback in the context.
 
@@ -44,15 +44,18 @@ class ReviewerAgent(BaseAgent):
         if not formatted_output or not isinstance(formatted_output, dict):
             self._log_warning("No valid formatted output found in context. Cannot perform review.", context)
             # Store minimal review result in context
-            error_review = {"error": "Could not perform review: No formatted output available."}
+            error_review = {
+                "error": "Could not perform review: No formatted output available.",
+                "status": "failed"
+            }
             self._store_data(context, None, error_review)
             return error_review
 
         try:
             # --- Get Configuration ---
-            assessment_config = context.get_assessment_config()
+            assessment_type = context.assessment_type
             output_schema = context.get_output_schema()
-            base_reviewer_instructions = context.get_workflow_instructions(self.role) or "Review the formatted output for quality, consistency, and adherence to the schema."
+            reviewer_instructions = context.get_workflow_instructions(self.role) or "Review the formatted output for quality, consistency, and adherence to the schema."
 
             # --- Define Schema for Review Output ---
             review_output_schema = {
@@ -82,51 +85,47 @@ class ReviewerAgent(BaseAgent):
                 "required": ["overall_quality_score", "schema_adherence_score", "clarity_score", "completeness_score", "review_summary", "strengths", "areas_for_improvement", "specific_suggestions"]
             }
 
-            # --- Get Input Data for Review ---
-            # Get additional data for context
+            # --- Prepare Smart Preview of Output ---
+            preview_data = self._create_smart_preview(formatted_output, assessment_type)
+            
+            # Get evaluated items summary for context
             evaluated_items_count = 0
-            data_type_map = {
-                "extract": "action_items",
-                "assess": "issues",
-                "distill": "key_points",
-                "analyze": "evidence"
-            }
-            data_type = data_type_map.get(context.assessment_type)
+            data_type = self._get_data_type_for_assessment(assessment_type)
             if data_type:
                 evaluated_items = self._get_data(context, "evaluator", data_type, [])
                 evaluated_items_count = len(evaluated_items)
 
             # --- Construct Prompt for LLM Review ---
-            # Summarize the report slightly for the prompt if it's huge
-            report_preview_json = json.dumps(formatted_output, indent=2, default=str, ensure_ascii=False)
-            max_preview_len = self.options.get("review_preview_length", 6000)
-            if len(report_preview_json) > max_preview_len:
-                report_preview_json = report_preview_json[:max_preview_len] + "\n... [Report Truncated for Review Prompt] ..."
-                self._log_warning(f"Report preview truncated to {max_preview_len} chars for reviewer prompt.", context)
-
             prompt = f"""
 You are an expert AI 'Reviewer' agent. Your task is to perform a quality control check on a JSON output generated by a previous 'Formatter' agent.
 
 **Assessment Context:**
-* **Assessment ID:** {context.assessment_id}
-* **Assessment Type:** {context.assessment_type} ({context.display_name})
+* **Assessment Type:** {assessment_type} ({context.display_name})
 * **Document:** {context.document_info.get('filename', 'N/A')}
-* **Total Items:** {evaluated_items_count} items were processed and evaluated
+* **Total Items:** {evaluated_items_count} items were evaluated
 
-**Expected Output Schema (What the Formatter *should* have produced):**
+**Expected Output Schema (What the Formatter should follow):**
 ```json
 {json.dumps(output_schema, indent=2)}
 ```
 
-**Formatted Output to Review:**
+**Formatted Output to Review (Smart Preview):**
 ```json
-{report_preview_json}
+{json.dumps(preview_data, indent=2, default=str)}
 ```
 
-**Base Instructions for Reviewer:** {base_reviewer_instructions}
+**Additional Context:**
+The output contains a total of {preview_data.get('_metadata', {}).get('total_items', 0)} items across all arrays.
+{preview_data.get('_metadata', {}).get('truncation_note', '')}
 
-**Your Task:**
-Critically evaluate the 'Formatted Output to Review'. Assess its quality, clarity, completeness (based on common sense for the assessment type), and how well it adheres to the 'Expected Output Schema'. Provide constructive feedback.
+**Review Instructions:**
+{reviewer_instructions}
+
+Critically evaluate the 'Formatted Output' for:
+1. **Quality** - Is the content well-organized, valuable, and actionable?
+2. **Schema Adherence** - Does it follow the expected schema structure?
+3. **Clarity** - Is the information presented clearly and logically?
+4. **Completeness** - Are all required elements present and substantive?
 
 **Output Format:** Respond only with a valid JSON object matching this schema:
 ```json
@@ -139,55 +138,179 @@ If the output is excellent, say so, but still provide at least one suggestion fo
 """
 
             # --- LLM Call to Perform Review ---
+            temperature = self.options.get("reviewer_temperature", 0.3)
+            max_tokens = self.options.get("reviewer_max_tokens", 3000)
+            
             review_result = await self._generate_structured(
                 prompt=prompt,
                 output_schema=review_output_schema,
                 context=context,
-                temperature=self.options.get("reviewer_temperature", 0.3),
-                max_tokens=self.options.get("reviewer_max_tokens", 6000)
+                temperature=temperature,
+                max_tokens=max_tokens
             )
 
-            # --- Process Review Results ---
-            # Add metadata to the review results
+            # --- Add Review Outcome & Metadata ---
+            # Add quality status based on scores
+            self._add_review_outcome(review_result)
+            
+            # Add metadata
             review_result["metadata"] = {
-                "timestamp": context.metadata.get("current_stage"),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "assessment_id": context.assessment_id,
                 "assessment_type": context.assessment_type
             }
 
-            # Calculate aggregate score
-            scores = [
-                review_result.get("overall_quality_score", 0),
-                review_result.get("schema_adherence_score", 0),
-                review_result.get("clarity_score", 0),
-                review_result.get("completeness_score", 0)
-            ]
-            avg_score = sum(scores) / len(scores)
-            review_result["aggregate_score"] = round(avg_score, 1)
-
-            # Determine review status
-            if avg_score >= 8.0:
-                review_result["status"] = "excellent"
-            elif avg_score >= 6.0:
-                review_result["status"] = "good"
-            elif avg_score >= 4.0:
-                review_result["status"] = "needs_improvement"
-            else:
-                review_result["status"] = "poor"
-
-            # --- Store review results using the enhanced BaseAgent method ---
+            # --- Store Review Results ---
             self._store_data(context, None, review_result)
             self._log_info(f"Review complete. Overall Score: {review_result.get('overall_quality_score', 'N/A')}/10", context)
-
+            
             return review_result
 
         except Exception as e:
             self._log_error(f"Review phase failed: {str(e)}", context, exc_info=True)
+            
             # Store error info in context
             error_review = {
                 "error": f"Review Agent Failed: {str(e)}",
-                "message": "Could not generate review feedback for the formatted output."
+                "message": "Could not generate review feedback for the formatted output.",
+                "status": "failed"
             }
             self._store_data(context, None, error_review)
-            # Re-raise the exception to fail the stage
-            raise
+            return error_review
+
+    def _create_smart_preview(self, output: Dict[str, Any], assessment_type: str) -> Dict[str, Any]:
+        """
+        Create a smart preview of the output that preserves key information
+        while staying within context limits.
+        """
+        # Make a deep copy to avoid modifying the original
+        import copy
+        preview = copy.deepcopy(output)
+        
+        # Add metadata placeholder
+        preview["_metadata"] = {
+            "truncation_note": "",
+            "total_items": 0
+        }
+        
+        # Identify and count items in arrays
+        total_items = 0
+        arrays_to_sample = []
+        
+        # Helper to find array properties
+        def find_arrays(obj, path=None):
+            nonlocal total_items
+            
+            if path is None:
+                path = []
+                
+            if not isinstance(obj, dict):
+                return
+                
+            for key, value in obj.items():
+                current_path = path + [key]
+                
+                # If this is an array of objects
+                if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                    total_items += len(value)
+                    arrays_to_sample.append({"path": current_path, "count": len(value)})
+                
+                # Recurse into nested objects
+                elif isinstance(value, dict):
+                    find_arrays(value, current_path)
+        
+        # Find arrays
+        find_arrays(preview)
+        preview["_metadata"]["total_items"] = total_items
+        
+        # If we found arrays that need sampling
+        if arrays_to_sample:
+            # Add note about sampling
+            preview["_metadata"]["truncation_note"] = f"The complete output contains {total_items} items across {len(arrays_to_sample)} arrays. This preview shows representative samples."
+            
+            # Sample arrays
+            for array_info in arrays_to_sample:
+                path = array_info["path"]
+                count = array_info["count"]
+                
+                # Navigate to array
+                current = preview
+                for i, key in enumerate(path[:-1]):
+                    current = current.get(key, {})
+                
+                last_key = path[-1]
+                if last_key in current:
+                    # Sample based on array size
+                    items = current[last_key]
+                    if len(items) > 5:
+                        # Sample items from beginning, middle, and end
+                        sampled = items[:2]  # Beginning
+                        
+                        # Add a middle item if array is large enough
+                        if len(items) > 4:
+                            middle_idx = len(items) // 2
+                            sampled.append(items[middle_idx])
+                        
+                        # Add end items
+                        sampled.extend(items[-2:])
+                        
+                        # Replace with sampled items
+                        current[last_key] = sampled
+                        
+                        # Add note about sampling
+                        sampled.insert(0, {"_note": f"[Showing 5 samples from {count} total items]"})
+        
+        # Remove metadata if no sampling was needed
+        if preview["_metadata"]["total_items"] == 0:
+            del preview["_metadata"]
+            
+        return preview
+
+    def _get_data_type_for_assessment(self, assessment_type: str) -> str:
+        """Determine the key/type of data being processed based on assessment type."""
+        data_type_map = {
+            "extract": "action_items",
+            "assess": "issues",
+            "distill": "key_points",
+            "analyze": "evidence"
+        }
+        return data_type_map.get(assessment_type, "items")
+
+    def _add_review_outcome(self, review_result: Dict[str, Any]) -> None:
+        """
+        Add review outcome (status and rating) based on scores.
+        """
+        # Calculate aggregate score
+        scores = [
+            review_result.get("overall_quality_score", 0),
+            review_result.get("schema_adherence_score", 0),
+            review_result.get("clarity_score", 0),
+            review_result.get("completeness_score", 0)
+        ]
+        avg_score = sum(scores) / len(scores) if scores else 0
+        avg_score = round(avg_score, 1)
+        review_result["aggregate_score"] = avg_score
+
+        # Determine review status
+        if avg_score >= 8.0:
+            review_result["status"] = "excellent"
+        elif avg_score >= 6.0:
+            review_result["status"] = "good"
+        elif avg_score >= 4.0:
+            review_result["status"] = "needs_improvement"
+        else:
+            review_result["status"] = "poor"
+            
+        # Add rating for UI display
+        rating_descriptions = {
+            "excellent": "The output is exceptional, with only minor suggestions for improvement.",
+            "good": "The output is solid but has a few areas for improvement.",
+            "needs_improvement": "The output has several issues that should be addressed.",
+            "poor": "The output has significant problems and should be regenerated."
+        }
+        
+        review_result["rating"] = {
+            "value": review_result["status"],
+            "score": avg_score,
+            "description": rating_descriptions.get(review_result["status"], "")
+        }

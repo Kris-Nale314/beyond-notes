@@ -179,7 +179,8 @@ class Orchestrator:
 
     async def _execute_pipeline(self, document: Document) -> None:
         """
-        Execute the complete processing pipeline based on the workflow configuration.
+        Execute the complete processing pipeline based on the workflow configuration,
+        with special handling for summarization (distill) assessment type.
         
         Args:
             document: Document to process
@@ -202,50 +203,163 @@ class Orchestrator:
             if not self.context.chunks:
                 logger.error("No chunks created. Cannot proceed with processing.")
                 return
-                
-        # 3. Execute enabled stages from the workflow configuration
-        enabled_stages = self.workflow_config.get("enabled_stages", [])
-        logger.info(f"Executing enabled stages: {enabled_stages}")
         
-        for stage_name in enabled_stages:
-            # Skip stages already done in steps 1-2
-            if stage_name in ["document_analysis", "chunking"]:
-                continue
-                
-            # Check if previous required stages completed successfully
-            prerequisites = self._get_stage_prerequisites(stage_name)
-            prerequisites_ok = True
+        # Special handling for distill/summarization type
+        if self.assessment_type == "distill":
+            logger.info("Using streamlined pipeline for summarization assessment")
             
-            for prereq in prerequisites:
-                prereq_stage = self.context.pipeline_state.get("stages", {}).get(prereq, {"status": "not_started"})
-                if prereq_stage.get("status") != "completed":
-                    logger.warning(f"Prerequisite stage '{prereq}' for '{stage_name}' did not complete successfully. Status: {prereq_stage.get('status', 'unknown')}")
-                    prerequisites_ok = False
+            # Simplified stages for summarization
+            streamlined_stages = ["planning", "extraction", "aggregation"]
+            
+            # Get user-specified format from options
+            format_type = self.options.get("user_options", {}).get("format", "executive")
+            logger.info(f"Summarization format type: {format_type}")
+            
+            # 3. Execute streamlined stages
+            for stage_name in streamlined_stages:
+                # Check if previous required stages completed successfully
+                prerequisites = self._get_stage_prerequisites(stage_name)
+                prerequisites_ok = True
+                
+                for prereq in prerequisites:
+                    prereq_stage = self.context.pipeline_state.get("stages", {}).get(prereq, {"status": "not_started"})
+                    if prereq_stage.get("status") != "completed":
+                        logger.warning(f"Prerequisite stage '{prereq}' for '{stage_name}' did not complete successfully. Status: {prereq_stage.get('status', 'unknown')}")
+                        prerequisites_ok = False
+                        
+                if not prerequisites_ok:
+                    logger.error(f"Skipping stage '{stage_name}' due to failed prerequisites.")
+                    self.context.fail_stage(stage_name, "Skipped due to failed prerequisites")
+                    continue
                     
-            if not prerequisites_ok:
-                logger.error(f"Skipping stage '{stage_name}' due to failed prerequisites.")
-                self.context.fail_stage(stage_name, "Skipped due to failed prerequisites")
-                continue
-                
-            # Execute the stage
+                # Execute the stage
+                try:
+                    stage_start_time = time.time()
+                    await self._execute_stage(stage_name)
+                    stage_duration = time.time() - stage_start_time
+                    logger.info(f"Completed stage '{stage_name}' in {stage_duration:.2f}s")
+                    
+                    # Debug: Log data state after stage completion
+                    self._log_data_state_after_stage(stage_name)
+                    
+                except Exception as e:
+                    logger.error(f"Error in stage '{stage_name}': {str(e)}", exc_info=True)
+                    self.context.fail_stage(stage_name, str(e))
+                    
+                    # Check if we should halt on error
+                    halt_on_error = self.workflow_config.get("halt_on_error", False)
+                    if halt_on_error:
+                        logger.warning(f"Halting workflow due to error in '{stage_name}'")
+                        break
+            
+            # 4. Direct formatting based on format type (implementing this method separately)
             try:
-                stage_start_time = time.time()
-                await self._execute_stage(stage_name)
-                stage_duration = time.time() - stage_start_time
-                logger.info(f"Completed stage '{stage_name}' in {stage_duration:.2f}s")
+                logger.info(f"Executing direct summary formatting in format: {format_type}")
+                self.context.set_stage("formatting")
+                await self._generate_formatted_summary(format_type)
+                self.context.complete_stage("formatting", {"message": f"Generated {format_type} summary format"})
                 
-                # Debug: Log data state after stage completion
-                self._log_data_state_after_stage(stage_name)
+                # Skip review stage for streamlined pipeline
+                logger.info("Skipping review stage in streamlined pipeline")
                 
             except Exception as e:
-                logger.error(f"Error in stage '{stage_name}': {str(e)}", exc_info=True)
-                self.context.fail_stage(stage_name, str(e))
+                logger.error(f"Error in direct formatting: {str(e)}", exc_info=True)
+                self.context.fail_stage("formatting", str(e))
+        
+        else:
+            # Standard pipeline for other assessment types
+            logger.info(f"Using standard pipeline for {self.assessment_type} assessment")
+            
+            # 3. Execute enabled stages from the workflow configuration
+            enabled_stages = self.workflow_config.get("enabled_stages", [])
+            logger.info(f"Executing enabled stages: {enabled_stages}")
+            
+            for stage_name in enabled_stages:
+                # Skip stages already done in steps 1-2
+                if stage_name in ["document_analysis", "chunking"]:
+                    continue
+                    
+                # Check if previous required stages completed successfully
+                prerequisites = self._get_stage_prerequisites(stage_name)
+                prerequisites_ok = True
                 
-                # Check if we should halt on error
-                halt_on_error = self.workflow_config.get("halt_on_error", False)
-                if halt_on_error:
-                    logger.warning(f"Halting workflow due to error in '{stage_name}'")
-                    break
+                for prereq in prerequisites:
+                    prereq_stage = self.context.pipeline_state.get("stages", {}).get(prereq, {"status": "not_started"})
+                    if prereq_stage.get("status") != "completed":
+                        logger.warning(f"Prerequisite stage '{prereq}' for '{stage_name}' did not complete successfully. Status: {prereq_stage.get('status', 'unknown')}")
+                        prerequisites_ok = False
+                        
+                if not prerequisites_ok:
+                    logger.error(f"Skipping stage '{stage_name}' due to failed prerequisites.")
+                    self.context.fail_stage(stage_name, "Skipped due to failed prerequisites")
+                    continue
+                    
+                # Execute the stage
+                try:
+                    stage_start_time = time.time()
+                    await self._execute_stage(stage_name)
+                    stage_duration = time.time() - stage_start_time
+                    logger.info(f"Completed stage '{stage_name}' in {stage_duration:.2f}s")
+                    
+                    # Debug: Log data state after stage completion
+                    self._log_data_state_after_stage(stage_name)
+                    
+                except Exception as e:
+                    logger.error(f"Error in stage '{stage_name}': {str(e)}", exc_info=True)
+                    self.context.fail_stage(stage_name, str(e))
+                    
+                    # Check if we should halt on error
+                    halt_on_error = self.workflow_config.get("halt_on_error", False)
+                    if halt_on_error:
+                        logger.warning(f"Halting workflow due to error in '{stage_name}'")
+                        break
+
+    async def _generate_formatted_summary(self, format_type: str) -> None:
+        """
+        Generate a formatted summary directly from aggregated key points.
+        
+        Args:
+            format_type: Type of summary format to generate (executive, comprehensive, bullet_points, narrative)
+        """
+        logger.info(f"Generating formatted summary in '{format_type}' format")
+        
+        try:
+            # Get aggregated key points
+            key_points = self.context.get_data_for_agent("aggregator", "key_points", default=[])
+            if not key_points:
+                logger.warning("No key points found for summary generation")
+                # Create empty result structure
+                summary_result = {
+                    "summary": "No key points were found to generate a summary.",
+                    "metadata": {
+                        "word_count": self.context.document_info.get("word_count", 0),
+                        "format_type": format_type,
+                        "generated_at": datetime.now(timezone.utc).isoformat()
+                    }
+                }
+                self.context.store_agent_data("formatter", None, summary_result)
+                return
+                
+            # TODO: Implement the actual summary generation using the LLM
+            # This is where you'll add your implementation
+            
+            # Placeholder for now - you'll replace this
+            summary_result = {
+                "summary": f"Placeholder for {format_type} summary based on {len(key_points)} key points",
+                "metadata": {
+                    "word_count": self.context.document_info.get("word_count", 0),
+                    "format_type": format_type,
+                    "generated_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+            
+            # Store the result
+            self.context.store_agent_data("formatter", None, summary_result)
+            logger.info(f"Successfully generated {format_type} summary")
+            
+        except Exception as e:
+            logger.error(f"Error generating formatted summary: {e}", exc_info=True)
+            raise
 
     def _log_data_state_after_stage(self, stage_name: str) -> None:
         """Log the state of the data store after a stage completes for debugging."""
