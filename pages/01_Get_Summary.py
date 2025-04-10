@@ -20,11 +20,18 @@ try:
     from assessments.loader import AssessmentLoader
     from utils.paths import AppPaths
     from utils.ui.styles import get_base_styles
-    from utils.ui.components import page_header, section_header, display_document_preview
-    
-    # Import our new renderers and data accessor
-    from utils.ui.renderers import render_summary_result, render_simple_progress
     from utils.accessor import DataAccessor
+    
+    # Import new enhanced UI components
+    from utils.ui.enhanced import (
+        enhanced_page_header,
+        enhanced_section_header,
+        enhanced_document_preview,
+        animated_progress_indicator,
+        format_selector,
+        display_summary_result,
+        apply_enhanced_theme
+    )
     
     logger.info("Successfully imported all components")
 except ImportError as e:
@@ -72,117 +79,7 @@ st.set_page_config(
 
 # Apply shared styles
 st.markdown(get_base_styles(), unsafe_allow_html=True)
-
-# Add enhanced styling for format selection
-st.markdown("""
-<style>
-    /* Format selection styles */
-    .format-option {
-        background-color: rgba(0,0,0,0.05);
-        border-radius: 8px;
-        padding: 16px;
-        margin-bottom: 16px;
-        border: 2px solid transparent;
-        transition: all 0.2s ease;
-        cursor: pointer;
-    }
-    
-    .format-option:hover {
-        background-color: rgba(33, 150, 243, 0.1);
-        transform: translateY(-2px);
-    }
-    
-    .format-option.selected {
-        border-color: #2196F3;
-        background-color: rgba(33, 150, 243, 0.15);
-    }
-    
-    .format-title {
-        font-weight: 600;
-        font-size: 1.1rem;
-        margin-bottom: 8px;
-    }
-    
-    .format-description {
-        opacity: 0.85;
-        font-size: 0.9rem;
-        line-height: 1.4;
-    }
-    
-    /* Agent status indicator */
-    .agent-indicator {
-        display: flex;
-        align-items: center;
-        background-color: rgba(33, 150, 243, 0.1);
-        border-radius: 8px;
-        padding: 10px 16px;
-        margin: 16px 0;
-        border-left: 3px solid #2196F3;
-    }
-    
-    .agent-avatar {
-        width: 38px;
-        height: 38px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background-color: #2196F3;
-        color: white;
-        font-size: 18px;
-        margin-right: 12px;
-        flex-shrink: 0;
-    }
-    
-    .agent-info {
-        flex-grow: 1;
-    }
-    
-    .agent-name {
-        font-weight: 600;
-        margin-bottom: 4px;
-    }
-    
-    .agent-task {
-        font-size: 0.9rem;
-        opacity: 0.8;
-    }
-    
-    @keyframes pulse {
-        0% { opacity: 0.6; }
-        50% { opacity: 1; }
-        100% { opacity: 0.6; }
-    }
-    
-    .agent-status {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background-color: #4CAF50;
-        margin-left: 12px;
-        animation: pulse 1.5s infinite;
-    }
-    
-    /* Debug panel */
-    .debug-panel {
-        background-color: rgba(0, 0, 0, 0.1);
-        border-radius: 8px;
-        padding: 12px;
-        margin-top: 24px;
-    }
-    
-    .debug-header {
-        font-weight: 600;
-        margin-bottom: 12px;
-        display: flex;
-        align-items: center;
-    }
-    
-    .debug-icon {
-        margin-right: 8px;
-    }
-</style>
-""", unsafe_allow_html=True)
+apply_enhanced_theme()
 
 def initialize_page():
     """Initialize the session state variables."""
@@ -489,135 +386,16 @@ async def process_document(document, assessment_id, options):
         st.session_state.processing_complete = True
         return None
 
-def display_agent_status():
-    """Display the current active agent with enhanced styling."""
-    if "current_agent" not in st.session_state:
-        return
-    
-    agent_name = st.session_state.current_agent
-    agent_task = st.session_state.get("current_agent_task", "Working...")
-    
-    # Map agent names to friendly display names and icons
-    agent_display_names = {
-        "PlannerAgent": ("Planner", "🧭"),
-        "ExtractorAgent": ("Extractor", "🔍"),
-        "SummarizerAgent": ("Summarizer", "📝"),
-        "AggregatorAgent": ("Aggregator", "🧩"),
-        "EvaluatorAgent": ("Evaluator", "⚖️"),
-        "FormatterAgent": ("Formatter", "📊"),
-        "ReviewerAgent": ("Reviewer", "🔍")
-    }
-    
-    # Get display name and icon
-    display_name, icon = agent_display_names.get(agent_name, ("Agent", "🤖"))
-    
-    # Render the agent indicator
-    st.markdown(f"""
-    <div class="agent-indicator">
-        <div class="agent-avatar">{icon}</div>
-        <div class="agent-info">
-            <div class="agent-name">{display_name} Agent</div>
-            <div class="agent-task">{agent_task}</div>
-        </div>
-        <div class="agent-status"></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-def display_format_options():
-    """Display format options with enhanced styling and clear descriptions."""
-    # Format options with clear descriptions
-    format_options = {
-        "executive": {
-            "title": "Executive Summary",
-            "description": "A concise overview highlighting only the most important information (5-10% of original length)."
-        },
-        "comprehensive": {
-            "title": "Comprehensive Summary",
-            "description": "A detailed summary covering all significant aspects of the document (15-25% of original length)."
-        },
-        "bullet_points": {
-            "title": "Key Points",
-            "description": "Important information organized into easy-to-scan bullet points grouped by topic."
-        },
-        "narrative": {
-            "title": "Narrative Summary",
-            "description": "A flowing narrative that captures the document's content while maintaining its tone."
-        }
-    }
-    
-    # Get currently selected format
-    selected_format = st.session_state.get("selected_format", "executive")
-    
-    # Create columns for the format options
-    col1, col2 = st.columns(2)
-    
-    # Executive and Comprehensive in first column
-    with col1:
-        for format_key in ["executive", "comprehensive"]:
-            format_info = format_options[format_key]
-            selected_class = "selected" if format_key == selected_format else ""
-            
-            st.markdown(f"""
-            <div class="format-option {selected_class}" onclick="selectFormat('{format_key}')">
-                <div class="format-title">{format_info["title"]}</div>
-                <div class="format-description">{format_info["description"]}</div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Bullet Points and Narrative in second column
-    with col2:
-        for format_key in ["bullet_points", "narrative"]:
-            format_info = format_options[format_key]
-            selected_class = "selected" if format_key == selected_format else ""
-            
-            st.markdown(f"""
-            <div class="format-option {selected_class}" onclick="selectFormat('{format_key}')">
-                <div class="format-title">{format_info["title"]}</div>
-                <div class="format-description">{format_info["description"]}</div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Add JavaScript to handle clicks and update radio buttons
-    st.markdown("""
-    <script>
-    function selectFormat(format) {
-        // Find the corresponding radio button and click it
-        const radios = document.querySelectorAll('input[type="radio"]');
-        for (const radio of radios) {
-            if (radio.value === format) {
-                radio.click();
-                break;
-            }
-        }
-    }
-    </script>
-    """, unsafe_allow_html=True)
-    
-    # Hidden radio buttons for actual selection
-    format_choice = st.radio(
-        "Select Format",
-        options=list(format_options.keys()),
-        format_func=lambda x: format_options[x]["title"],
-        index=list(format_options.keys()).index(selected_format),
-        key="format_radio",
-        label_visibility="collapsed"
-    )
-    
-    # Update session state when selection changes
-    if format_choice != st.session_state.get("selected_format"):
-        st.session_state.selected_format = format_choice
-        logger.info(f"Format changed to: {format_choice}")
-
 def display_debug_panel():
     """Display debugging information when debug mode is enabled."""
     if not st.session_state.debug_mode:
         return
     
     st.markdown("""
-    <div class="debug-panel">
-        <div class="debug-header">
-            <span class="debug-icon">🔍</span> Debug Panel
-        </div>
+    <div style="background-color: rgba(0, 0, 0, 0.1); border-radius: 8px; padding: 12px; margin-top: 24px;">
+        <h3 style="margin-top: 0; display: flex; align-items: center;">
+            <span style="margin-right: 8px;">🔍</span> Debug Panel
+        </h3>
     </div>
     """, unsafe_allow_html=True)
     
@@ -675,8 +453,13 @@ def main():
     # Initialize page
     initialize_page()
     
-    # Page header
-    page_header("📝 Document Summarizer", "Transform transcripts and documents into clear, readable summaries")
+    # Enhanced page header
+    enhanced_page_header(
+        "Document Summarizer",
+        "📝",
+        "Transform your documents into clear, concise summaries with our multi-agent AI system",
+        ("#2196F3", "#673AB7")  # Blue to purple gradient
+    )
     
     # Debug mode toggle in sidebar
     with st.sidebar:
@@ -690,7 +473,7 @@ def main():
         )
     
     # Document upload section
-    section_header("Upload Document", 1)
+    enhanced_section_header("Upload Document", 1, "📄")
     
     uploaded_file = st.file_uploader("Upload a document to summarize", type=["txt", "md", "docx", "pdf"])
     
@@ -702,15 +485,15 @@ def main():
         if document:
             st.session_state.document = document
             st.session_state.document_loaded = True
-            display_document_preview(document)
+            enhanced_document_preview(document)
     
     # Configuration section
     if st.session_state.document_loaded:
-        section_header("Configure Summary", 2)
+        enhanced_section_header("Configure Summary", 2, "⚙️")
         
-        # Display enhanced format selection
-        st.subheader("Summary Format")
-        display_format_options()
+        # Enhanced format selection
+        selected_format = format_selector(st.session_state.selected_format)
+        st.session_state.selected_format = selected_format
         
         # Advanced settings in expander
         with st.expander("Advanced Options", expanded=False):
@@ -797,16 +580,13 @@ def main():
     
     # Processing section
     if st.session_state.processing_started:
-        section_header("Processing Status", 3)
+        enhanced_section_header("Processing Status", 3, "🔄")
         
         if not st.session_state.processing_complete:
             logger.info("Processing in progress, showing status...")
             
-            # Use the imported render_simple_progress function
-            render_simple_progress(st.session_state)
-            
-            # Display current active agent
-            display_agent_status()
+            # Enhanced progress indicator
+            animated_progress_indicator(st.session_state)
             
             # Process document if not already processing
             if 'is_processing' not in st.session_state:
@@ -837,7 +617,7 @@ def main():
         
         # Results section
         if st.session_state.processing_complete:
-            section_header("Summary Results", 4)
+            enhanced_section_header("Summary Results", 4, "📊")
             
             if st.session_state.summary_result:
                 logger.info("Displaying summary results")
@@ -853,8 +633,11 @@ def main():
                         # Load context object for enhanced rendering
                         context = st.session_state.context_obj
                         
-                        # Use our improved renderer with the DataAccessor
-                        render_summary_result(result, context)
+                        # Get standardized data using DataAccessor
+                        data = DataAccessor.get_summary_data(result, context)
+                        
+                        # Display the results with enhanced component
+                        display_summary_result(data)
                         logger.info("Successfully rendered summary result")
                         
                     except Exception as e:

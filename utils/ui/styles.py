@@ -105,6 +105,183 @@ def get_base_styles():
         0% {background-position: 40px 0;}
         100% {background-position: 0 0;}
     }
+
+    /* Enhanced typography */
+    body {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    h1, h2, h3, h4, h5, h6 {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 600;
+    }
+
+    /* Improved button styling */
+    .stButton > button {
+        border-radius: 6px !important;
+        font-weight: 500 !important;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1) !important;
+    }
+
+    .stButton > button[data-baseweb="button"]:focus {
+        box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.5) !important;
+    }
+
+    /* Primary button styling */
+    .stButton > button[kind="primary"] {
+        background-color: #2196F3 !important;
+        border-color: #2196F3 !important;
+    }
+
+    .stButton > button[kind="primary"]:hover {
+        background-color: #1976D2 !important;
+        border-color: #1976D2 !important;
+    }
+
+    /* Secondary button styling */
+    .stButton > button[kind="secondary"] {
+        border-color: rgba(255, 255, 255, 0.2) !important;
+    }
+
+    /* Radio buttons, checkboxes */
+    .stRadio > div[role="radiogroup"] > label > div[data-baseweb="radio"] > div {
+        background-color: rgba(33, 150, 243, 0.8) !important;
+    }
+
+    .stCheckbox > div[role="checkbox"] > div[data-baseweb="checkbox"] > div {
+        background-color: rgba(33, 150, 243, 0.8) !important;
+    }
+
+    /* Input fields */
+    .stTextInput > div > div > input {
+        border-radius: 6px !important;
+    }
+
+    .stTextInput > div > div > input:focus {
+        border-color: #2196F3 !important;
+        box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.5) !important;
+    }
+
+    /* Select boxes */
+    .stSelectbox > div > div > div {
+        border-radius: 6px !important;
+    }
+
+    .stSelectbox > div > div > div:focus {
+        border-color: #2196F3 !important;
+        box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.5) !important;
+    }
+
+    /* Metrics styling */
+    .stMetric {
+        background-color: rgba(0, 0, 0, 0.05);
+        border-radius: 8px;
+        padding: 10px;
+        transition: transform 0.2s ease;
+    }
+
+    .stMetric:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    /* Code blocks */
+    .stCode > div {
+        border-radius: 8px !important;
+    }
+
+    /* Expanders */
+    .streamlit-expanderHeader {
+        font-weight: 500 !important;
+        color: #2196F3 !important;
+        border-radius: 6px !important;
+    }
+
+    .streamlit-expanderHeader:hover {
+        background-color: rgba(33, 150, 243, 0.1) !important;
+    }
+
+    .streamlit-expanderContent {
+        border-radius: 0 0 6px 6px !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    }
+
+    /* Sliders */
+    .stSlider > div > div > div > div {
+        background-color: #2196F3 !important;
+    }
+
+    .stSlider > div > div > div > div > div {
+        background-color: #2196F3 !important;
+    }
+
+    /* Progress bar */
+    .stProgress > div > div > div > div {
+        background-color: #2196F3 !important;
+        background-image: linear-gradient(
+            45deg,
+            rgba(255, 255, 255, 0.15) 25%,
+            transparent 25%,
+            transparent 50%,
+            rgba(255, 255, 255, 0.15) 50%,
+            rgba(255, 255, 255, 0.15) 75%,
+            transparent 75%,
+            transparent
+        ) !important;
+        background-size: 40px 40px !important;
+        animation: progress-bar-stripes 2s linear infinite !important;
+    }
+
+    @keyframes progress-bar-stripes {
+        0% {background-position: 40px 0;}
+        100% {background-position: 0 0;}
+    }
+
+    /* Tabs styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 4px 4px 0 0;
+        padding: 8px 16px;
+        font-weight: 500;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background-color: rgba(33, 150, 243, 0.1) !important;
+        color: #2196F3 !important;
+    }
+
+    /* Sidebar improvements */
+    .css-1d391kg, .css-hxt7ib {
+        background-color: rgba(0, 0, 0, 0.1) !important;
+    }
+
+    /* File uploader */
+    .stFileUploader > div {
+        border-radius: 8px !important;
+    }
+
+    .stFileUploader > div:hover {
+        border-color: #2196F3 !important;
+    }
+
+    /* Error and warning messages */
+    .stAlert {
+        border-radius: 8px !important;
+    }
+
+    [data-testid="stNotificationContent"] {
+        border-radius: 8px !important;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+    }
 </style>
 """
 

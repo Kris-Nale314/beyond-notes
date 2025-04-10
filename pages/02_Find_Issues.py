@@ -20,11 +20,19 @@ try:
     from assessments.loader import AssessmentLoader
     from utils.paths import AppPaths
     from utils.ui.styles import get_base_styles
-    from utils.ui.components import page_header, section_header, display_document_preview
-    
-    # Import our new renderers and data accessor
-    from utils.ui.renderers import render_issues_result, render_detailed_progress
     from utils.accessor import DataAccessor
+    
+    # Import new enhanced UI components
+    from utils.ui.enhanced import (
+        enhanced_page_header,
+        enhanced_section_header,
+        enhanced_document_preview,
+        animated_progress_indicator,
+        advanced_progress_detail,
+        detail_level_selector,
+        display_issues_result,
+        apply_enhanced_theme
+    )
     
     logger.info("Successfully imported all components")
 except ImportError as e:
@@ -73,163 +81,7 @@ st.set_page_config(
 
 # Apply shared styles
 st.markdown(get_base_styles(), unsafe_allow_html=True)
-
-# Add enhanced styling for assessment options
-st.markdown("""
-<style>
-    /* Assessment option styles */
-    .assessment-option {
-        background-color: rgba(0,0,0,0.05);
-        border-radius: 8px;
-        padding: 16px;
-        margin-bottom: 16px;
-        border: 2px solid transparent;
-        transition: all 0.2s ease;
-        cursor: pointer;
-    }
-    
-    .assessment-option:hover {
-        background-color: rgba(244, 67, 54, 0.1);
-        transform: translateY(-2px);
-    }
-    
-    .assessment-option.selected {
-        border-color: #F44336;
-        background-color: rgba(244, 67, 54, 0.15);
-    }
-    
-    .assessment-title {
-        font-weight: 600;
-        font-size: 1.1rem;
-        margin-bottom: 8px;
-    }
-    
-    .assessment-description {
-        opacity: 0.85;
-        font-size: 0.9rem;
-        line-height: 1.4;
-    }
-    
-    /* Agent status indicator */
-    .agent-indicator {
-        display: flex;
-        align-items: center;
-        background-color: rgba(244, 67, 54, 0.1);
-        border-radius: 8px;
-        padding: 10px 16px;
-        margin: 16px 0;
-        border-left: 3px solid #F44336;
-    }
-    
-    .agent-avatar {
-        width: 38px;
-        height: 38px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background-color: #F44336;
-        color: white;
-        font-size: 18px;
-        margin-right: 12px;
-        flex-shrink: 0;
-    }
-    
-    .agent-info {
-        flex-grow: 1;
-    }
-    
-    .agent-name {
-        font-weight: 600;
-        margin-bottom: 4px;
-    }
-    
-    .agent-task {
-        font-size: 0.9rem;
-        opacity: 0.8;
-    }
-    
-    @keyframes pulse {
-        0% { opacity: 0.6; }
-        50% { opacity: 1; }
-        100% { opacity: 0.6; }
-    }
-    
-    .agent-status {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background-color: #4CAF50;
-        margin-left: 12px;
-        animation: pulse 1.5s infinite;
-    }
-    
-    /* Issue severity options */
-    .severity-option {
-        display: flex;
-        align-items: center;
-        padding: 12px;
-        margin-bottom: 8px;
-        border-radius: 6px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-    }
-    
-    .severity-critical {
-        background-color: rgba(244, 67, 54, 0.1);
-        border-left: 3px solid #F44336;
-    }
-    
-    .severity-high {
-        background-color: rgba(255, 152, 0, 0.1);
-        border-left: 3px solid #FF9800;
-    }
-    
-    .severity-medium {
-        background-color: rgba(33, 150, 243, 0.1);
-        border-left: 3px solid #2196F3;
-    }
-    
-    .severity-low {
-        background-color: rgba(76, 175, 80, 0.1);
-        border-left: 3px solid #4CAF50;
-    }
-    
-    .severity-icon {
-        font-size: 1.5rem;
-        margin-right: 12px;
-    }
-    
-    .severity-label {
-        font-weight: 500;
-    }
-    
-    .severity-description {
-        font-size: 0.85rem;
-        opacity: 0.8;
-        margin-top: 4px;
-    }
-    
-    /* Debug panel */
-    .debug-panel {
-        background-color: rgba(0, 0, 0, 0.1);
-        border-radius: 8px;
-        padding: 12px;
-        margin-top: 24px;
-    }
-    
-    .debug-header {
-        font-weight: 600;
-        margin-bottom: 12px;
-        display: flex;
-        align-items: center;
-    }
-    
-    .debug-icon {
-        margin-right: 8px;
-    }
-</style>
-""", unsafe_allow_html=True)
+apply_enhanced_theme()
 
 def initialize_page():
     """Initialize the session state variables."""
@@ -532,140 +384,62 @@ async def process_document(document, assessment_id, options):
         st.session_state.processing_complete = True
         return None
 
-def display_agent_status():
-    """Display the current active agent with enhanced styling."""
-    if "current_agent" not in st.session_state:
-        return
-    
-    agent_name = st.session_state.current_agent
-    agent_task = st.session_state.get("current_agent_task", "Working...")
-    
-    # Map agent names to friendly display names and icons
-    agent_display_names = {
-        "PlannerAgent": ("Planner", "🧭"),
-        "ExtractorAgent": ("Extractor", "🔍"),
-        "AggregatorAgent": ("Aggregator", "🧩"),
-        "EvaluatorAgent": ("Evaluator", "⚖️"),
-        "FormatterAgent": ("Formatter", "📊"),
-        "ReviewerAgent": ("Reviewer", "🔍")
-    }
-    
-    # Get display name and icon
-    display_name, icon = agent_display_names.get(agent_name, ("Agent", "🤖"))
-    
-    # Render the agent indicator
-    st.markdown(f"""
-    <div class="agent-indicator">
-        <div class="agent-avatar">{icon}</div>
-        <div class="agent-info">
-            <div class="agent-name">{display_name} Agent</div>
-            <div class="agent-task">{agent_task}</div>
-        </div>
-        <div class="agent-status"></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-def display_detail_level_options():
-    """Display detail level options with enhanced styling."""
-    # Detail level options with descriptions
-    detail_options = {
-        "essential": {
-            "title": "Essential Issues Only",
-            "description": "Focus only on the most significant issues and problems."
-        },
-        "standard": {
-            "title": "Standard Assessment",
-            "description": "Balanced analysis of issues with moderate detail."
-        },
-        "comprehensive": {
-            "title": "Comprehensive Analysis",
-            "description": "In-depth assessment of all potential issues and risks."
-        }
-    }
-    
-    # Get currently selected level
-    selected_level = st.session_state.get("selected_detail_level", "standard")
-    
-    # Display options in a grid
-    st.subheader("Detail Level")
-    
-    for level_key, level_info in detail_options.items():
-        selected_class = "selected" if level_key == selected_level else ""
-        
-        st.markdown(f"""
-        <div class="assessment-option {selected_class}" onclick="selectLevel('{level_key}')">
-            <div class="assessment-title">{level_info["title"]}</div>
-            <div class="assessment-description">{level_info["description"]}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Add JavaScript to handle clicks and update radio buttons
-    st.markdown("""
-    <script>
-    function selectLevel(level) {
-        // Find the corresponding radio button and click it
-        const radios = document.querySelectorAll('input[type="radio"]');
-        for (const radio of radios) {
-            if (radio.value === level) {
-                radio.click();
-                break;
-            }
-        }
-    }
-    </script>
-    """, unsafe_allow_html=True)
-    
-    # Hidden radio buttons for actual selection
-    level_choice = st.radio(
-        "Select Detail Level",
-        options=list(detail_options.keys()),
-        format_func=lambda x: detail_options[x]["title"],
-        index=list(detail_options.keys()).index(selected_level),
-        key="detail_level_radio",
-        label_visibility="collapsed"
-    )
-    
-    # Update session state when selection changes
-    if level_choice != st.session_state.get("selected_detail_level"):
-        st.session_state.selected_detail_level = level_choice
-        logger.info(f"Detail level changed to: {level_choice}")
-
 def display_severity_options():
-    """Display severity level descriptions."""
-    st.markdown("### Severity Levels")
-    st.caption("Issues will be classified into these severity levels:")
+    """Display severity level descriptions with enhanced styling."""
+    st.markdown("### Understanding Severity Levels")
     
     # Severity descriptions
     severity_descriptions = {
         "critical": {
             "icon": "🔴",
+            "title": "CRITICAL",
             "description": "Immediate threat requiring urgent attention. Significant impact on objectives."
         },
         "high": {
             "icon": "🟠",
+            "title": "HIGH",
             "description": "Major issue with significant impact. Should be addressed promptly."
         },
         "medium": {
             "icon": "🔵",
+            "title": "MEDIUM",
             "description": "Moderate issue with noteworthy impact. Should be addressed in due course."
         },
         "low": {
             "icon": "🟢",
+            "title": "LOW",
             "description": "Minor issue with limited impact. Address when convenient."
         }
     }
     
-    # Display each severity level
-    for severity, info in severity_descriptions.items():
-        st.markdown(f"""
-        <div class="severity-option severity-{severity}">
-            <div class="severity-icon">{info["icon"]}</div>
-            <div>
-                <div class="severity-label">{severity.upper()}</div>
-                <div class="severity-description">{info["description"]}</div>
+    # Create a grid layout
+    cols = st.columns(4)
+    
+    # Display each severity level in its own column
+    for i, (severity, info) in enumerate(severity_descriptions.items()):
+        with cols[i]:
+            st.markdown(f"""
+            <div style="padding: 10px; background-color: rgba(0,0,0,0.05); border-radius: 8px; height: 100%;
+                      border-left: 3px solid {get_severity_color(severity)};">
+                <div style="font-size: 1.5rem; margin-bottom: 5px; text-align: center;">{info['icon']}</div>
+                <div style="font-weight: 600; margin-bottom: 5px; text-align: center; color: {get_severity_color(severity)};">
+                    {info['title']}
+                </div>
+                <div style="font-size: 0.85rem; opacity: 0.8; text-align: center;">
+                    {info['description']}
+                </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+
+def get_severity_color(severity):
+    """Get color for severity level."""
+    colors = {
+        "critical": "#F44336",
+        "high": "#FF9800",
+        "medium": "#2196F3",
+        "low": "#4CAF50"
+    }
+    return colors.get(severity, "#2196F3")
 
 def display_debug_panel():
     """Display debugging information when debug mode is enabled."""
@@ -673,10 +447,10 @@ def display_debug_panel():
         return
     
     st.markdown("""
-    <div class="debug-panel">
-        <div class="debug-header">
-            <span class="debug-icon">🔍</span> Debug Panel
-        </div>
+    <div style="background-color: rgba(0, 0, 0, 0.1); border-radius: 8px; padding: 12px; margin-top: 24px;">
+        <h3 style="margin-top: 0; display: flex; align-items: center;">
+            <span style="margin-right: 8px;">🔍</span> Debug Panel
+        </h3>
     </div>
     """, unsafe_allow_html=True)
     
@@ -734,8 +508,13 @@ def main():
     # Initialize page
     initialize_page()
     
-    # Page header
-    page_header("⚠️ Issue Assessment", "Identify problems, challenges, risks, and concerns in your documents")
+    # Enhanced page header
+    enhanced_page_header(
+        "Issue Assessment",
+        "⚠️",
+        "Identify problems, challenges, risks, and concerns in your documents with intelligent analysis",
+        ("#F44336", "#FF9800")  # Red to orange gradient
+    )
     
     # Debug mode toggle in sidebar
     with st.sidebar:
@@ -749,7 +528,7 @@ def main():
         )
     
     # Document upload section
-    section_header("Upload Document", 1)
+    enhanced_section_header("Upload Document", 1, "📄")
     
     uploaded_file = st.file_uploader("Upload a document to analyze", type=["txt", "md", "docx", "pdf"])
     
@@ -761,16 +540,17 @@ def main():
         if document:
             st.session_state.document = document
             st.session_state.document_loaded = True
-            display_document_preview(document)
+            enhanced_document_preview(document)
     
     # Configuration section
     if st.session_state.document_loaded:
-        section_header("Configure Assessment", 2)
+        enhanced_section_header("Configure Assessment", 2, "⚙️")
         
-        # Display detail level options with enhanced styling
-        display_detail_level_options()
+        # Enhanced detail level selection
+        selected_level = detail_level_selector(st.session_state.selected_detail_level)
+        st.session_state.selected_detail_level = selected_level
         
-        # Severity level explainer
+        # Display severity level explainer
         with st.expander("Understanding Severity Levels", expanded=False):
             display_severity_options()
         
@@ -873,16 +653,17 @@ def main():
     
     # Processing section
     if st.session_state.processing_started:
-        section_header("Processing Status", 3)
+        enhanced_section_header("Processing Status", 3, "🔄")
         
         if not st.session_state.processing_complete:
             logger.info("Processing in progress, showing status...")
             
-            # Use the imported render_detailed_progress function
-            render_detailed_progress(st.session_state)
+            # Enhanced progress indicator
+            animated_progress_indicator(st.session_state)
             
-            # Display current active agent
-            display_agent_status()
+            # Advanced progress detail
+            with st.expander("View Detailed Progress", expanded=False):
+                advanced_progress_detail(st.session_state)
             
             # Process document if not already processing
             if 'is_processing' not in st.session_state:
@@ -913,7 +694,7 @@ def main():
         
         # Results section
         if st.session_state.processing_complete:
-            section_header("Issue Assessment Results", 4)
+            enhanced_section_header("Issue Assessment Results", 4, "📋")
             
             if st.session_state.issues_result:
                 logger.info("Displaying issues assessment results")
@@ -929,8 +710,11 @@ def main():
                         # Load context object for enhanced rendering
                         context = st.session_state.context_obj
                         
-                        # Use our improved renderer with the DataAccessor
-                        render_issues_result(result, context)
+                        # Get standardized data using DataAccessor
+                        data = DataAccessor.get_issues_data(result, context)
+                        
+                        # Display the results with enhanced component
+                        display_issues_result(data)
                         logger.info("Successfully rendered issues result")
                         
                     except Exception as e:
