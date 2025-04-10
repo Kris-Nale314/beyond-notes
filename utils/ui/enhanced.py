@@ -881,12 +881,33 @@ def display_summary_result(data):
     st.markdown("</div>", unsafe_allow_html=True)
     
     # Display statistics
+    # End summary container
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+    # Display statistics with better data extraction
     statistics = data.get("statistics", {})
-    if statistics:
-        original_words = statistics.get("original_word_count", 0)
-        summary_words = statistics.get("summary_word_count", 0)
-        compression = statistics.get("compression_ratio", 0)
-        
+    metadata = data.get("metadata", {})
+    
+    # Get original word count - look in multiple places for it
+    original_words = statistics.get("original_word_count", 0)
+    if original_words == 0:
+        # Try getting it from metadata or document_info
+        document_info = metadata.get("document_info", {})
+        original_words = document_info.get("word_count", 0)
+    
+    # Get summary word count
+    summary_words = statistics.get("summary_word_count", 0)
+    if summary_words == 0 and summary_content:
+        # Calculate it directly from content
+        summary_words = len(summary_content.split())
+    
+    # Calculate compression ratio if needed
+    compression = statistics.get("compression_ratio", 0)
+    if compression == 0 and original_words > 0 and summary_words > 0:
+        compression = (summary_words / original_words) * 100
+    
+    # Only display if we have meaningful stats
+    if original_words > 0 or summary_words > 0:
         st.markdown("<h3 style='color: rgba(255, 255, 255, 0.9);'>Summary Statistics</h3>", unsafe_allow_html=True)
         
         cols = st.columns(3)
@@ -897,7 +918,10 @@ def display_summary_result(data):
             st.metric("Summary Length", f"{summary_words:,} words")
             
         with cols[2]:
-            st.metric("Compression Ratio", f"{compression:.1f}%" if compression else "N/A")
+            if original_words and summary_words:
+                st.metric("Compression Ratio", f"{compression:.1f}%")
+            else:
+                st.metric("Compression Ratio", "N/A")
 
 
 # Dark theme issues results

@@ -196,20 +196,35 @@ class DataAccessor:
             if not isinstance(summary_data["topics"], list):
                 summary_data["topics"] = []
             
-            # Infer some statistics if needed
-            if "original_word_count" not in summary_data["statistics"] and "word_count" in summary_data["metadata"]:
-                summary_data["statistics"]["original_word_count"] = summary_data["metadata"]["word_count"]
+            # Extract original word count from metadata if not in statistics
+            original_word_count = summary_data["statistics"].get("original_word_count", 0)
+            if original_word_count <= 0:
+                document_info = summary_data["metadata"].get("document_info", {})
+                if isinstance(document_info, dict) and "word_count" in document_info:
+                    word_count = document_info.get("word_count", 0)
+                    # Add to statistics
+                    summary_data["statistics"]["original_word_count"] = word_count
+                    logger.debug(f"Added original word count {word_count} from metadata")
             
-            if "summary_word_count" not in summary_data["statistics"] and summary_data["summary_content"]:
-                summary_data["statistics"]["summary_word_count"] = len(summary_data["summary_content"].split())
-                
+            # Calculate summary word count if needed
+            summary_word_count = summary_data["statistics"].get("summary_word_count", 0)
+            if summary_word_count <= 0 and summary_data["summary_content"]:
+                # Count words in summary
+                summary_content = summary_data["summary_content"]
+                if isinstance(summary_content, str):
+                    word_count = len(summary_content.split())
+                    summary_data["statistics"]["summary_word_count"] = word_count
+                    logger.debug(f"Calculated summary word count: {word_count}")
+            
+            # Calculate compression ratio if possible
             if ("compression_ratio" not in summary_data["statistics"] and 
-                    "original_word_count" in summary_data["statistics"] and 
-                    "summary_word_count" in summary_data["statistics"]):
+                    summary_data["statistics"].get("original_word_count", 0) > 0 and 
+                    summary_data["statistics"].get("summary_word_count", 0) > 0):
                 original = summary_data["statistics"]["original_word_count"]
                 summary = summary_data["statistics"]["summary_word_count"]
                 if original > 0:
                     summary_data["statistics"]["compression_ratio"] = (summary / original) * 100
+                    logger.debug(f"Calculated compression ratio: {summary_data['statistics']['compression_ratio']:.1f}%")
             
             return summary_data
             
