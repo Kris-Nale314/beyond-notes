@@ -12,6 +12,8 @@ from core.models.context import ProcessingContext
 from core.llm.customllm import CustomLLM
 from utils.chunking import chunk_document
 from assessments.loader import AssessmentLoader
+from core.agents.summarizer import SummarizerAgent
+
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +83,7 @@ class Orchestrator:
         self.progress_callback = None
 
     def _load_agents(self) -> None:
-        """
-        Load and initialize the agents needed for the pipeline.
-        """
+        """Load and initialize the agents needed for the pipeline."""
         try:
             # Dynamic imports to avoid circular dependencies
             from core.agents.planner import PlannerAgent
@@ -92,6 +92,8 @@ class Orchestrator:
             from core.agents.evaluator import EvaluatorAgent
             from core.agents.formatter import FormatterAgent
             from core.agents.reviewer import ReviewerAgent
+            # Import SummarizerAgent
+            from core.agents.summarizer import SummarizerAgent
             
             # Get agent options from runtime options
             agent_options = self.options.get("agent_options", {})
@@ -99,6 +101,7 @@ class Orchestrator:
             # Initialize agents with the LLM instance
             self.agents["planner"] = PlannerAgent(self.llm, agent_options.get("planner", {}))
             self.agents["extractor"] = ExtractorAgent(self.llm, agent_options.get("extractor", {}))
+            self.agents["summarizer"] = SummarizerAgent(self.llm, agent_options.get("summarizer", {}))
             self.agents["aggregator"] = AggregatorAgent(self.llm, agent_options.get("aggregator", {}))
             self.agents["evaluator"] = EvaluatorAgent(self.llm, agent_options.get("evaluator", {}))
             self.agents["formatter"] = FormatterAgent(self.llm, agent_options.get("formatter", {}))
@@ -106,6 +109,10 @@ class Orchestrator:
             
             # Verify agent roles
             for role, agent in self.agents.items():
+                # Skip role check for summarizer since it uses extractor role
+                if role == "summarizer" and agent.role == "extractor":
+                    continue
+                    
                 if agent.role != role:
                     logger.warning(f"Agent '{agent.name}' has role '{agent.role}' but was registered as '{role}'. This may cause data flow issues.")
                     agent.role = role  # Set the correct role to match the registry key
@@ -119,6 +126,58 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Error initializing agents: {str(e)}", exc_info=True)
             raise RuntimeError(f"Failed to initialize agents: {e}") from e
+
+    # Update the _execute_stage method to use SummarizerAgent for distill assessments
+    async def _execute_stage(self, stage_name: str) -> Any:
+        """
+        Execute a processing stage using the appropriate agent.
+        
+        Args:
+            stage_name: Name of the stage to execute
+            
+        Returns:
+            Stage result or None if execution failed
+        """
+        # Use summarizer for extraction stage in distill assessments
+        if stage_name == "extraction" and self.assessment_type == "distill":
+            agent_role = "summarizer"
+            logger.info(f"Using SummarizerAgent for extraction stage in distill assessment")
+        else:
+            agent_role = self._get_agent_role_for_stage(stage_name)
+            
+        if not agent_role or agent_role not in self.agents:
+            error_msg = f"No agent configured or available for stage '{stage_name}' (role: {agent_role})."
+            self.context.fail_stage(stage_name, error_msg)
+            logger.error(error_msg)
+            return None
+
+        agent = self.agents[agent_role]
+        self.context.set_stage(stage_name)
+        
+        # Register agent with the context
+        self.context.register_agent(stage_name, agent.name)
+
+        logger.info(f"Executing stage: {stage_name} with agent: {agent_role}")
+        
+        try:
+            # Process with the agent
+            result = await agent.process(self.context)
+            
+            # Complete the stage
+            self.context.complete_stage(stage_name, result)
+            return result
+            
+        except Exception as e:
+            error_message = f"Error executing agent '{agent_role}' for stage '{stage_name}': {str(e)}"
+            self.context.fail_stage(stage_name, error_message)
+            logger.error(error_message, exc_info=True)
+            
+            # Decide whether to re-raise based on config
+            halt_on_error = self.workflow_config.get("halt_on_error", False)
+            if halt_on_error:
+                raise
+                
+            return None
 
     async def process_document(self, document: Document) -> Dict[str, Any]:
         """
@@ -316,7 +375,7 @@ class Orchestrator:
 
     async def _generate_formatted_summary(self, format_type: str) -> None:
         """
-        Generate a formatted summary directly from aggregated key points.
+        Generate a formatted summary from aggregated key points.
         
         Args:
             format_type: Type of summary format to generate (executive, comprehensive, bullet_points, narrative)
@@ -326,11 +385,13 @@ class Orchestrator:
         try:
             # Get aggregated key points
             key_points = self.context.get_data_for_agent("aggregator", "key_points", default=[])
-            if not key_points:
-                logger.warning("No key points found for summary generation")
+            topics = self.context.get_data_for_agent("aggregator", "topics", default=[])
+            
+            if not key_points and not topics:
+                logger.warning("No key points or topics found for summary generation")
                 # Create empty result structure
                 summary_result = {
-                    "summary": "No key points were found to generate a summary.",
+                    "summary": "No key information was found to generate a summary.",
                     "metadata": {
                         "word_count": self.context.document_info.get("word_count", 0),
                         "format_type": format_type,
@@ -339,26 +400,105 @@ class Orchestrator:
                 }
                 self.context.store_agent_data("formatter", None, summary_result)
                 return
-                
-            # TODO: Implement the actual summary generation using the LLM
-            # This is where you'll add your implementation
             
-            # Placeholder for now - you'll replace this
+            # Build a prompt for generating a summary
+            prompt = f"""
+    You are an expert document summarizer. Create a {format_type} format summary based on the key points
+    and topics extracted from a document.
+
+    # Document Information
+    - Type: {self.context.document_info.get('filename', 'document')}
+    - Word Count: {self.context.document_info.get('word_count', 0)} words
+
+    # Key Points ({len(key_points)} extracted):
+    """
+            
+            # Add key points to the prompt (max 30 for context length)
+            for i, point in enumerate(key_points[:30]):
+                if isinstance(point, dict):
+                    point_text = point.get("text", "")
+                    prompt += f"{i+1}. {point_text}\n"
+                elif isinstance(point, str):
+                    prompt += f"{i+1}. {point}\n"
+            
+            if len(key_points) > 30:
+                prompt += f"... and {len(key_points) - 30} more points\n"
+            
+            # Add topics if available
+            if topics:
+                prompt += "\n# Topics:\n"
+                for topic in topics:
+                    if isinstance(topic, dict):
+                        topic_name = topic.get("topic", "")
+                        if topic_name:
+                            prompt += f"- {topic_name}\n"
+            
+            # Add format-specific instructions
+            prompt += f"\n# Format Instructions - {format_type.title()}:\n"
+            
+            if format_type == "executive":
+                prompt += "Create a concise executive summary (250-500 words) that highlights the most important information."
+            elif format_type == "comprehensive":
+                prompt += "Create a detailed summary that covers all significant aspects of the document (800-1500 words)."
+            elif format_type == "bullet_points":
+                prompt += "Transform the content into clear, concise bullet points organized by topic."
+            elif format_type == "narrative":
+                prompt += "Create a flowing narrative that captures the document's content in a readable story form."
+            
+            # Add final output instructions
+            prompt += "\n\nYour response should be a detailed, well-written summary that accurately represents the content."
+            
+            # Generate the summary using the LLM
+            system_prompt = "You are an expert summarizer that creates accurate, well-structured summaries of documents."
+            
+            # Call LLM for summary generation
+            summary_text, usage = await self.llm.generate_completion(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                max_tokens=1500,
+                temperature=0.3
+            )
+            
+            # Track token usage
+            if usage and "total_tokens" in usage:
+                self.context.track_token_usage(usage["total_tokens"])
+            
+            # Calculate some basic statistics
+            doc_word_count = self.context.document_info.get("word_count", 0)
+            summary_word_count = len(summary_text.split())
+            
+            # Create a proper summary result
             summary_result = {
-                "summary": f"Placeholder for {format_type} summary based on {len(key_points)} key points",
+                "summary": summary_text,
+                "metadata": {
+                    "word_count": doc_word_count,
+                    "format_type": format_type,
+                    "generated_at": datetime.now(timezone.utc).isoformat()
+                },
+                "statistics": {
+                    "original_word_count": doc_word_count,
+                    "summary_word_count": summary_word_count,
+                    "compression_ratio": round((summary_word_count / max(1, doc_word_count)) * 100, 1)
+                }
+            }
+            
+            # Store the result
+            self.context.store_agent_data("formatter", None, summary_result)
+            logger.info(f"Successfully generated {format_type} summary: {summary_word_count} words")
+            
+        except Exception as e:
+            logger.error(f"Error generating formatted summary: {e}", exc_info=True)
+            
+            # Create an error result
+            error_result = {
+                "error": f"Failed to generate summary: {str(e)}",
                 "metadata": {
                     "word_count": self.context.document_info.get("word_count", 0),
                     "format_type": format_type,
                     "generated_at": datetime.now(timezone.utc).isoformat()
                 }
             }
-            
-            # Store the result
-            self.context.store_agent_data("formatter", None, summary_result)
-            logger.info(f"Successfully generated {format_type} summary")
-            
-        except Exception as e:
-            logger.error(f"Error generating formatted summary: {e}", exc_info=True)
+            self.context.store_agent_data("formatter", None, error_result)
             raise
 
     def _log_data_state_after_stage(self, stage_name: str) -> None:
@@ -448,51 +588,7 @@ class Orchestrator:
             logger.error(error_msg, exc_info=True)
             raise
 
-    async def _execute_stage(self, stage_name: str) -> Any:
-        """
-        Execute a processing stage using the appropriate agent.
-        
-        Args:
-            stage_name: Name of the stage to execute
-            
-        Returns:
-            Stage result or None if execution failed
-        """
-        agent_role = self._get_agent_role_for_stage(stage_name)
-        if not agent_role or agent_role not in self.agents:
-            error_msg = f"No agent configured or available for stage '{stage_name}' (role: {agent_role})."
-            self.context.fail_stage(stage_name, error_msg)
-            logger.error(error_msg)
-            return None
-
-        agent = self.agents[agent_role]
-        self.context.set_stage(stage_name)
-        
-        # Register agent with the context
-        self.context.register_agent(stage_name, agent.name)
-
-        logger.info(f"Executing stage: {stage_name} with agent: {agent_role}")
-        
-        try:
-            # Process with the agent
-            result = await agent.process(self.context)
-            
-            # Complete the stage
-            self.context.complete_stage(stage_name, result)
-            return result
-            
-        except Exception as e:
-            error_message = f"Error executing agent '{agent_role}' for stage '{stage_name}': {str(e)}"
-            self.context.fail_stage(stage_name, error_message)
-            logger.error(error_message, exc_info=True)
-            
-            # Decide whether to re-raise based on config
-            halt_on_error = self.workflow_config.get("halt_on_error", False)
-            if halt_on_error:
-                raise
-                
-            return None
-
+    
     def _get_agent_role_for_stage(self, stage_name: str) -> Optional[str]:
         """Map stage name to agent role."""
         # Standard mapping between stage names and agent roles
@@ -657,3 +753,55 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Unexpected error during processing for assessment '{assessment_id}': {e}", exc_info=True)
             return {"result": None, "metadata": {"error": f"Unexpected error: {e}"}, "statistics": {}}
+        
+    def save_processing_context(self, output_path: Path) -> Path:
+        """
+        Save the processing context to disk alongside the results.
+        
+        Args:
+            output_path: Path to the results file (will use same base name with .pkl extension)
+            
+        Returns:
+            Path to the saved context file
+        """
+        if not self.context:
+            logger.warning("No context available to save")
+            return None
+            
+        # Create a context-safe copy for serialization
+        try:
+            # Determine the context file path based on the results path
+            context_path = output_path.with_suffix('.pkl')
+            
+            logger.info(f"Saving processing context to: {context_path}")
+            
+            # Create a serialization-safe copy of the context
+            # (removes non-serializable items like functions)
+            import pickle
+            import copy
+            
+            # Create a deep copy to avoid modifying the original
+            context_copy = copy.deepcopy(self.context)
+            
+            # Remove potentially problematic attributes for serialization
+            if hasattr(context_copy, '_progress_callback'):
+                context_copy._progress_callback = None
+                
+            # Add additional metadata that might be useful for chat
+            context_copy.serialized_at = datetime.now(timezone.utc).isoformat()
+            context_copy.orchestrator_info = {
+                "assessment_id": self.assessment_id,
+                "assessment_type": self.assessment_type,
+                "display_name": self.display_name
+            }
+            
+            # Save using pickle
+            with open(context_path, 'wb') as f:
+                pickle.dump(context_copy, f)
+                
+            logger.info(f"Successfully saved context to {context_path}")
+            return context_path
+            
+        except Exception as e:
+            logger.error(f"Error saving context: {str(e)}", exc_info=True)
+            return None

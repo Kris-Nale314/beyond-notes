@@ -1,5 +1,18 @@
 import os
 from pathlib import Path
+from datetime import datetime
+from typing import Tuple
+import logging
+from logging import getLogger
+from logging.handlers import RotatingFileHandler
+from dotenv import load_dotenv
+from pathlib import Path
+from typing import Optional
+from typing import Dict
+from typing import Any
+from typing import List
+from typing import Tuple
+
 
 class AppPaths:
     """Central management of application paths."""
@@ -84,3 +97,41 @@ class AppPaths:
             temp_dir.mkdir(exist_ok=True, parents=True)
             return temp_dir
         return cls.TEMP
+    
+def get_assessment_result_path(assessment_type: str, document_name: str, run_id: str = None) -> Tuple[Path, Path, Path]:
+    """
+    Generate standardized paths for assessment results, context, and report.
+    
+    Args:
+        assessment_type: Type of assessment (distill, extract, assess, analyze)
+        document_name: Name of the original document
+        run_id: Optional unique run identifier 
+        
+    Returns:
+        Tuple of (json_path, context_path, markdown_path)
+    """
+    # Ensure the output directory exists
+    output_dir = get_assessment_output_dir(assessment_type)
+    output_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Create a base filename from document name
+    base_name = Path(document_name).stem
+    # Clean up filename to be safe for all filesystems
+    base_name = "".join(c for c in base_name if c.isalnum() or c in "._- ").strip()
+    if not base_name:
+        base_name = "document"
+        
+    # Add timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_suffix = f"_{run_id}" if run_id else ""
+    
+    # Generate the three paths
+    result_filename = f"{assessment_type}_result_{base_name}_{timestamp}{run_suffix}.json"
+    context_filename = f"{assessment_type}_context_{base_name}_{timestamp}{run_suffix}.pkl"
+    report_filename = f"{assessment_type}_report_{base_name}_{timestamp}{run_suffix}.md"
+    
+    return (
+        output_dir / result_filename,
+        output_dir / context_filename,
+        output_dir / report_filename
+    )

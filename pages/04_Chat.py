@@ -1,9 +1,10 @@
-# pages/03_Chat.py
+# pages/04_Chat.py
 import streamlit as st
 import os
 import json
 import logging
 import time
+import asyncio
 from pathlib import Path
 from datetime import datetime
 
@@ -14,6 +15,9 @@ logger = logging.getLogger("beyond-notes-chat")
 # Import components
 from core.llm.customllm import CustomLLM
 from utils.paths import AppPaths
+from core.models.context import ProcessingContext  # Import the context model
+from utils.ui.styles import get_base_styles
+from utils.ui.components import page_header, section_header
 
 # Ensure directories exist
 AppPaths.ensure_dirs()
@@ -25,26 +29,12 @@ st.set_page_config(
     layout="wide",
 )
 
-# Define accent colors
-PRIMARY_COLOR = "#4CAF50"  # Green
-SECONDARY_COLOR = "#2196F3"  # Blue
-ACCENT_COLOR = "#FF9800"  # Orange
-ERROR_COLOR = "#F44336"  # Red
+# Apply shared styles
+st.markdown(get_base_styles(), unsafe_allow_html=True)
 
-# CSS to customize the appearance
+# Add chat-specific styles
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: 700;
-        margin-bottom: 1rem;
-    }
-    .section-header {
-        font-size: 1.5rem;
-        font-weight: 600;
-        margin-top: 1rem;
-        margin-bottom: 0.5rem;
-    }
     .chat-message {
         padding: 1rem;
         border-radius: 0.5rem;
@@ -73,9 +63,14 @@ st.markdown("""
     .chat-content {
         flex-grow: 1;
     }
-    .chat-input {
-        display: flex;
-        margin-top: 2rem;
+    .chat-timestamp {
+        font-size: 0.8rem;
+        opacity: 0.7;
+        margin-top: 0.5rem;
+        text-align: right;
+    }
+    .suggestion-button {
+        margin-bottom: 0.5rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -91,16 +86,23 @@ def initialize_chat_page():
     if "current_assessment" not in st.session_state:
         st.session_state.current_assessment = None
     
+    if "current_context" not in st.session_state:
+        st.session_state.current_context = None
+    
     if "llm" not in st.session_state:
         # Initialize LLM if not already done
         api_key = os.environ.get("OPENAI_API_KEY")
         if api_key:
-            st.session_state.llm = CustomLLM(api_key, model="gpt-3.5-turbo")
+            # Use GPT-4 for better reasoning if available, otherwise fall back to GPT-3.5
+            model = "gpt-4" if os.environ.get("USE_GPT4", "false").lower() == "true" else "gpt-3.5-turbo"
+            st.session_state.llm = CustomLLM(api_key, model=model)
+            logger.info(f"Initialized LLM with model: {model}")
         else:
             st.session_state.llm = None
+            logger.warning("No API key found. LLM will not be available.")
 
 def load_recent_assessments():
-    """Load a list of recent assessments."""
+    """Load a list of recent assessments with improved data extraction."""
     assessment_types = ["distill", "extract", "assess", "analyze"]
     recent_assessments = []
     
@@ -109,34 +111,50 @@ def load_recent_assessments():
         output_dir = AppPaths.get_assessment_output_dir(assessment_type)
         
         if output_dir.exists():
-            # Look for JSON result files
-            for file_path in output_dir.glob(f"{assessment_type}_result_*.json"):
+            # Look for both JSON result files and context files
+            for file_path in output_dir.glob(f"{assessment_type}_*.*"):
                 try:
+                    # Filter for json and pickle files
+                    if file_path.suffix not in ['.json', '.pkl', '.md']:
+                        continue
+                        
                     # Get file stats
                     stat = file_path.stat()
                     
-                    # Try to load basic metadata
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        try:
-                            data = json.load(f)
-                            metadata = data.get("metadata", {})
-                            
-                            # Create assessment entry
-                            assessment = {
-                                "id": file_path.stem,
-                                "path": file_path,
-                                "type": assessment_type,
-                                "display_name": metadata.get("assessment_display_name", assessment_type.title()),
-                                "document_name": metadata.get("document_info", {}).get("filename", "Unknown Document"),
-                                "modified": datetime.fromtimestamp(stat.st_mtime),
-                                "data": data
-                            }
-                            
-                            recent_assessments.append(assessment)
-                        except json.JSONDecodeError:
-                            # Skip invalid JSON files
-                            logger.warning(f"Invalid JSON in file: {file_path}")
-                            continue
+                    # For JSON files, load basic metadata
+                    if file_path.suffix == '.json':
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            try:
+                                data = json.load(f)
+                                metadata = data.get("metadata", {})
+                                
+                                # Create an ID for this assessment
+                                assessment_id = file_path.stem
+                                
+                                # Check if we've already added this assessment
+                                if any(a["id"] == assessment_id for a in recent_assessments):
+                                    continue
+                                
+                                # Create assessment entry
+                                assessment = {
+                                    "id": assessment_id,
+                                    "result_path": file_path,
+                                    "context_path": file_path.with_suffix('.pkl'),  # Look for matching context file
+                                    "md_path": file_path.with_suffix('.md'),  # Look for matching markdown file
+                                    "type": assessment_type,
+                                    "display_name": metadata.get("assessment_display_name", assessment_type.title()),
+                                    "document_name": metadata.get("document_info", {}).get("filename", "Unknown Document"),
+                                    "modified": datetime.fromtimestamp(stat.st_mtime),
+                                    "has_context": file_path.with_suffix('.pkl').exists(),
+                                    "has_markdown": file_path.with_suffix('.md').exists(),
+                                    "metadata": metadata
+                                }
+                                
+                                recent_assessments.append(assessment)
+                            except json.JSONDecodeError:
+                                # Skip invalid JSON files
+                                logger.warning(f"Invalid JSON in file: {file_path}")
+                                continue
                 except Exception as e:
                     logger.warning(f"Error loading assessment file {file_path}: {str(e)}")
                     continue
@@ -146,144 +164,366 @@ def load_recent_assessments():
     
     return recent_assessments
 
-def load_assessment(assessment_path):
-    """Load assessment data from a file."""
+def load_assessment_data(assessment):
+    """Load assessment data from files with context when available."""
     try:
-        with open(assessment_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        return data
+        # Load result data
+        result_data = None
+        if assessment["result_path"].exists():
+            with open(assessment["result_path"], 'r', encoding='utf-8') as f:
+                result_data = json.load(f)
+        
+        # Try to load context (if available)
+        context_data = None
+        if assessment["has_context"] and assessment["context_path"].exists():
+            try:
+                import pickle
+                with open(assessment["context_path"], 'rb') as f:
+                    context_data = pickle.load(f)
+                logger.info(f"Successfully loaded context data from {assessment['context_path']}")
+            except Exception as e:
+                logger.error(f"Error loading context data: {str(e)}")
+        
+        # Load markdown report if available
+        markdown_report = None
+        if assessment["has_markdown"] and assessment["md_path"].exists():
+            try:
+                with open(assessment["md_path"], 'r', encoding='utf-8') as f:
+                    markdown_report = f.read()
+                logger.info(f"Successfully loaded markdown report from {assessment['md_path']}")
+            except Exception as e:
+                logger.error(f"Error loading markdown report: {str(e)}")
+        
+        return {
+            "result": result_data,
+            "context": context_data,
+            "markdown": markdown_report,
+            "metadata": assessment.get("metadata", {})
+        }
     except Exception as e:
         logger.error(f"Error loading assessment data: {str(e)}")
         return None
 
 def get_document_content(assessment_data):
-    """Extract document content from assessment data if available."""
+    """Extract document content with improved fallbacks."""
     try:
-        # Try to get document text from metadata
-        metadata = assessment_data.get("metadata", {})
+        # Try different paths to get document text
+        
+        # 1. First check if context has document_text
+        if assessment_data.get("context") and hasattr(assessment_data["context"], "document_text"):
+            return assessment_data["context"].document_text
+        
+        # 2. Try to get from result metadata
+        metadata = assessment_data.get("result", {}).get("metadata", {})
         document_info = metadata.get("document_info", {})
         
-        # Some assessments might store the document text
         if "document_text" in document_info:
             return document_info.get("document_text")
         
-        # If not available directly, try to infer from file path
-        if "filename" in document_info:
-            filename = document_info.get("filename")
+        # 3. Check for text in original document
+        filename = document_info.get("filename")
+        if filename:
             # Try to find the file in uploads dir
             upload_path = AppPaths.get_temp_path("uploads") / filename
             if upload_path.exists():
                 try:
                     # Try with utf-8 encoding first
                     with open(upload_path, 'r', encoding='utf-8') as f:
-                        return f.read()
+                        doc_text = f.read()
+                        logger.info(f"Successfully loaded document text from upload: {upload_path}")
+                        return doc_text
                 except UnicodeDecodeError:
                     # If utf-8 fails, try with latin-1 which should handle any byte sequence
                     with open(upload_path, 'r', encoding='latin-1') as f:
-                        return f.read()
+                        doc_text = f.read()
+                        logger.info(f"Successfully loaded document text from upload (latin-1): {upload_path}")
+                        return doc_text
         
+        logger.warning("Document content not available through standard methods")
         return "Document content not available. Please provide context in your questions."
     except Exception as e:
         logger.error(f"Error getting document content: {str(e)}")
         return "Error retrieving document content."
 
-def get_assessment_summary(assessment_data):
-    """Generate a summary of the assessment data."""
+def prepare_context_for_chat(assessment_data):
+    """Prepare structured context information for better chat responses."""
+    context_dict = {"document_info": {}, "assessment_info": {}, "key_data": {}}
+    
     try:
-        metadata = assessment_data.get("metadata", {})
-        assessment_type = metadata.get("assessment_type", "unknown")
-        document_name = metadata.get("document_info", {}).get("filename", "Unknown Document")
-        
+        # Get metadata from result
         result = assessment_data.get("result", {})
+        metadata = result.get("metadata", {}) or assessment_data.get("metadata", {})
         
-        summary = f"Assessment of document: {document_name}\n"
-        summary += f"Assessment type: {assessment_type.title()}\n\n"
+        # Basic document info
+        document_info = metadata.get("document_info", {})
+        context_dict["document_info"] = {
+            "filename": document_info.get("filename", "Unknown"),
+            "word_count": document_info.get("word_count", 0),
+            "character_count": document_info.get("character_count", 0),
+            "line_count": document_info.get("line_count", 0)
+        }
         
-        # Type-specific summaries
+        # Assessment info
+        context_dict["assessment_info"] = {
+            "type": metadata.get("assessment_type", "unknown"),
+            "id": metadata.get("assessment_id", "unknown"),
+            "display_name": metadata.get("assessment_display_name", "Unknown"),
+            "processing_time": metadata.get("processing_time_seconds", 0),
+            "stages_completed": metadata.get("stages_completed", []),
+            "total_tokens": assessment_data.get("result", {}).get("statistics", {}).get("total_tokens", 0)
+        }
+        
+        # Get key data based on assessment type
+        assessment_type = metadata.get("assessment_type", "unknown")
+        
+        # Extract key data based on type
         if assessment_type == "distill":
-            summary += "**Key Points:**\n"
-            key_points = result.get("key_points", [])
-            for i, point in enumerate(key_points[:5], 1):
-                summary += f"{i}. {point.get('text', '')}\n"
+            # For summary, get key points and executive summary
+            key_points = []
             
-            if len(key_points) > 5:
-                summary += f"... and {len(key_points) - 5} more points\n"
+            # Check extracted_info first (most likely location)
+            if "extracted_info" in result and "key_points" in result["extracted_info"]:
+                key_points = result["extracted_info"]["key_points"]
+            elif "key_points" in result:
+                key_points = result["key_points"]
                 
-        elif assessment_type == "extract":
-            summary += "**Action Items:**\n"
-            action_items = result.get("action_items", [])
-            for i, item in enumerate(action_items[:5], 1):
-                desc = item.get("description", "")
-                owner = item.get("owner", "Unassigned")
-                summary += f"{i}. {desc} (Owner: {owner})\n"
+            # Get executive summary if available
+            executive_summary = None
+            if "overall_assessment" in result and "executive_summary" in result["overall_assessment"]:
+                executive_summary = result["overall_assessment"]["executive_summary"]
                 
-            if len(action_items) > 5:
-                summary += f"... and {len(action_items) - 5} more action items\n"
-                
+            context_dict["key_data"] = {
+                "key_points": key_points,
+                "executive_summary": executive_summary,
+                "topics": result.get("topics", [])
+            }
+            
         elif assessment_type == "assess":
-            summary += "**Issues:**\n"
-            issues = result.get("issues", [])
-            for i, issue in enumerate(issues[:5], 1):
-                title = issue.get("title", "")
-                severity = issue.get("severity", "Unknown")
-                summary += f"{i}. {title} (Severity: {severity})\n"
+            # For issues assessment, get issues array
+            issues = []
+            if "issues" in result:
+                issues = result["issues"]
+            
+            executive_summary = result.get("executive_summary")
+            
+            context_dict["key_data"] = {
+                "issues": issues,
+                "executive_summary": executive_summary
+            }
+            
+        elif assessment_type == "extract":
+            # For action items, get action items array
+            action_items = []
+            if "action_items" in result:
+                action_items = result["action_items"]
                 
-            if len(issues) > 5:
-                summary += f"... and {len(issues) - 5} more issues\n"
-                
+            context_dict["key_data"] = {
+                "action_items": action_items
+            }
+            
         elif assessment_type == "analyze":
-            summary += "**Analysis Results:**\n"
-            # This will depend on your framework structure
-            if "overall_maturity" in result:
-                overall = result.get("overall_maturity", {})
-                rating = overall.get("overall_rating", "N/A")
-                summary += f"Overall Rating: {rating}\n"
-                summary += f"Summary: {overall.get('summary_statement', '')}\n"
+            # For framework analysis, structure depends on the framework
+            # This is a generic approach
+            context_dict["key_data"] = {
+                "framework_results": result
+            }
+            
+        # If we have context object, extract additional insights
+        if assessment_data.get("context"):
+            context_obj = assessment_data["context"]
+            
+            # Add chunk information if available
+            if hasattr(context_obj, "chunks") and context_obj.chunks:
+                context_dict["document_info"]["chunks"] = len(context_obj.chunks)
+                
+            # Add token tracking if available
+            if hasattr(context_obj, "token_usage") and context_obj.token_usage:
+                context_dict["assessment_info"]["token_usage"] = context_obj.token_usage
+                
+            # Add evidence store if available
+            if hasattr(context_obj, "evidence_store") and context_obj.evidence_store:
+                # Get a count of evidence items
+                evidence_count = 0
+                if "references" in context_obj.evidence_store:
+                    references = context_obj.evidence_store["references"]
+                    evidence_count = sum(len(refs) for refs in references.values())
+                
+                context_dict["assessment_info"]["evidence_count"] = evidence_count
         
-        return summary
+        # Add report data if available
+        if assessment_data.get("markdown"):
+            context_dict["report"] = assessment_data["markdown"]
+            
+        return context_dict
+        
     except Exception as e:
-        logger.error(f"Error generating assessment summary: {str(e)}")
-        return "Error generating assessment summary."
+        logger.error(f"Error preparing context for chat: {str(e)}")
+        return {"error": str(e)}
 
-async def generate_response(user_message, assessment_data, document_content):
-    """Generate a response using the LLM."""
+def extract_agent_insights(assessment_data):
+    """Extract agent-specific insights and organize them for the LLM."""
+    insights = {}
+    
+    try:
+        # Check if we have context object with agent data
+        if assessment_data.get("context") and hasattr(assessment_data["context"], "data"):
+            context_obj = assessment_data["context"]
+            
+            # Extract data from each agent
+            insights["planner"] = context_obj.get_data_for_agent("planner")
+            insights["extractor"] = {}
+            insights["aggregator"] = {}
+            insights["evaluator"] = {}
+            
+            # Get assessment type
+            assessment_type = assessment_data.get("metadata", {}).get("assessment_type", "unknown")
+            data_type = {
+                "extract": "action_items",
+                "assess": "issues",
+                "distill": "key_points",
+                "analyze": "evidence"
+            }.get(assessment_type, "items")
+            
+            # Extract type-specific data
+            if data_type:
+                insights["extractor"][data_type] = context_obj.get_data_for_agent("extractor", data_type)
+                insights["aggregator"][data_type] = context_obj.get_data_for_agent("aggregator", data_type)
+                insights["evaluator"][data_type] = context_obj.get_data_for_agent("evaluator", data_type)
+                
+            # Get overall assessment if available
+            insights["evaluator"]["overall_assessment"] = context_obj.get_data_for_agent("evaluator", "overall_assessment")
+            
+        # Fallback to result data if context not available
+        elif assessment_data.get("result"):
+            result = assessment_data["result"]
+            
+            # Try to infer agent outputs from result structure
+            if "extracted_info" in result:
+                insights["extractor"] = result["extracted_info"]
+                
+            if "overall_assessment" in result:
+                insights["evaluator"] = {"overall_assessment": result["overall_assessment"]}
+                
+        return insights
+        
+    except Exception as e:
+        logger.error(f"Error extracting agent insights: {str(e)}")
+        return {"error": str(e)}
+
+async def generate_chat_response(user_message, assessment_data, document_content, chat_history=None):
+    """Generate a response using the LLM with enhanced context awareness."""
     try:
         if "llm" not in st.session_state or not st.session_state.llm:
             return "Error: LLM not initialized. Please check your API key."
         
-        # Create a system prompt with context about the document and assessment
-        metadata = assessment_data.get("metadata", {})
+        # Prepare context information in a structured way
+        context_dict = prepare_context_for_chat(assessment_data)
+        
+        # Extract agent insights
+        agent_insights = extract_agent_insights(assessment_data)
+        
+        # Get assessment type and metadata
+        metadata = assessment_data.get("result", {}).get("metadata", {}) or assessment_data.get("metadata", {})
         assessment_type = metadata.get("assessment_type", "unknown")
         
-        # Get assessment summary
-        assessment_summary = get_assessment_summary(assessment_data)
-        
-        # Create system prompt
+        # Create system prompt with context about the document and assessment
         system_prompt = f"""
-You are a helpful AI assistant that answers questions about documents that have been analyzed by Beyond Notes.
-You have access to the assessment results and document content.
+You are ChatBeyond, an AI assistant that helps users explore documents processed by Beyond Notes, a multi-agent document analysis system.
 
-Assessment type: {assessment_type}
-Document: {metadata.get("document_info", {}).get("filename", "Unknown Document")}
+You have access to:
+1. The document content
+2. The assessment results produced by multiple specialized AI agents
+3. Structured context and insights extracted from the document
 
-Assessment Summary:
-{assessment_summary}
+Assessment Details:
+- Type: {assessment_type.title()}
+- Document: {context_dict.get("document_info", {}).get("filename", "Unknown Document")}
+- Words: {context_dict.get("document_info", {}).get("word_count", "Unknown")}
+- Processing: {context_dict.get("assessment_info", {}).get("stages_completed", [])}
 
-Result Data: {json.dumps(assessment_data.get("result", {}), indent=2)}
+Your capabilities:
+- Answer questions about the document's content
+- Explain the assessment findings in detail
+- Highlight key information based on the assessment type
+- Refer to specific evidence that supports your answers
+- Acknowledge when information is not available in the assessment
 
-When answering questions:
-1. Use the assessment data and document content to provide accurate information
-2. If the answer is not in the data, say so clearly
-3. Format your responses with Markdown for readability
-4. Be concise but thorough
-        """
+When answering:
+1. Primarily use the extracted insights and assessment results
+2. Reference the document content when needed for clarification or additional context
+3. Format responses with Markdown for readability
+4. Be concise but thorough, focusing on the user's specific question
+5. Provide specific references to evidence when available
+6. Make it clear when you're inferring information vs. stating explicit findings
+
+You have access to data from multiple analysis agents: Planner, Extractor, Aggregator, and Evaluator. Each provides different perspectives on the document.
+"""
+
+        # Prepare chat history context (last 5 messages maximum)
+        chat_context = ""
+        if chat_history and len(chat_history) > 0:
+            last_messages = chat_history[-5:] if len(chat_history) > 5 else chat_history
+            chat_context = "Previous conversation:\n"
+            for msg in last_messages:
+                prefix = "User" if msg["is_user"] else "Assistant"
+                chat_context += f"{prefix}: {msg['content'][:200]}{'...' if len(msg['content']) > 200 else ''}\n\n"
         
-        # Add user's query and document context
+        # Create a summary of key data based on assessment type
+        key_data_summary = ""
+        key_data = context_dict.get("key_data", {})
+        
+        if assessment_type == "distill":
+            # For summary assessment, highlight key points
+            key_points = key_data.get("key_points", [])
+            key_data_summary += f"Key Points ({len(key_points)}):\n"
+            
+            # Include up to 5 key points with high importance
+            high_importance_points = [p for p in key_points if p.get("importance", "").lower() == "high"][:3]
+            for point in high_importance_points:
+                key_data_summary += f"- {point.get('text', '')}\n"
+                
+            # Add executive summary if available
+            if key_data.get("executive_summary"):
+                key_data_summary += f"\nExecutive Summary:\n{key_data.get('executive_summary')[:300]}...\n"
+                
+        elif assessment_type == "assess":
+            # For issues assessment, highlight top issues
+            issues = key_data.get("issues", [])
+            key_data_summary += f"Issues ({len(issues)}):\n"
+            
+            # Include up to 3 high severity issues
+            high_severity_issues = [i for i in issues if i.get("severity", "").lower() in ["critical", "high"]][:3]
+            for issue in high_severity_issues:
+                key_data_summary += f"- {issue.get('title', '')}: {issue.get('severity', '').upper()}\n"
+                
+            # Add executive summary if available
+            if key_data.get("executive_summary"):
+                key_data_summary += f"\nExecutive Summary:\n{key_data.get('executive_summary')[:300]}...\n"
+                
+        elif assessment_type == "extract":
+            # For action items, highlight top action items
+            action_items = key_data.get("action_items", [])
+            key_data_summary += f"Action Items ({len(action_items)}):\n"
+            
+            # Include up to 3 high priority action items
+            high_priority_items = [a for a in action_items if a.get("priority", "").lower() == "high"][:3]
+            for item in high_priority_items:
+                key_data_summary += f"- {item.get('description', '')}\n"
+        
+        # Add user's query with context
         prompt = f"""
-Question: {user_message}
+{chat_context}
 
-Document Content (for reference): {document_content[:5000]}...
-        """
+Document Context Summary:
+{key_data_summary}
+
+User Question: {user_message}
+
+Relevant Document Content (preview): 
+{document_content[:2000]}...
+
+Remember to answer based primarily on the assessment results and insights, referring to the document content only as needed for context.
+"""
         
         # Call the LLM
         response, usage = await st.session_state.llm.generate_completion(
@@ -300,6 +540,11 @@ Document Content (for reference): {document_content[:5000]}...
         logger.error(f"Error generating response: {str(e)}")
         return f"Error generating response: {str(e)}"
 
+def format_timestamp(timestamp):
+    """Format a timestamp for display in chat."""
+    dt = datetime.fromtimestamp(timestamp)
+    return dt.strftime("%I:%M %p")
+
 def display_chat_message(message, is_user=False):
     """Display a chat message with appropriate styling."""
     if is_user:
@@ -309,31 +554,81 @@ def display_chat_message(message, is_user=False):
         avatar = "🤖"
         message_class = "assistant"
     
+    timestamp = format_timestamp(message.get("timestamp", time.time()))
+    
     st.markdown(f"""
     <div class="chat-message {message_class}">
         <div class="chat-avatar">{avatar}</div>
-        <div class="chat-content">{message}</div>
+        <div class="chat-content">
+            {message["content"]}
+            <div class="chat-timestamp">{timestamp}</div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
+
+def get_suggested_questions(assessment_type):
+    """Get suggested questions based on assessment type."""
+    # Base questions for all types
+    base_questions = [
+        "What is the most important information in this document?",
+        "Can you summarize the key findings?",
+        "What should I focus on in this document?"
+    ]
+    
+    # Type-specific questions
+    if assessment_type == "distill":
+        return base_questions + [
+            "What are the main key points of the document?",
+            "What topics does this document cover?",
+            "Can you extract important quotes from the document?",
+            "What are the most significant insights from this document?"
+        ]
+    elif assessment_type == "extract":
+        return base_questions + [
+            "What are the high priority action items?",
+            "Who is responsible for the most action items?",
+            "When are the action items due?",
+            "Are there any overdue or urgent action items?"
+        ]
+    elif assessment_type == "assess":
+        return base_questions + [
+            "What are the critical issues identified?",
+            "What are the highest severity risks?",
+            "What are the recommended solutions for the issues?",
+            "Are there any recurring themes among the issues?"
+        ]
+    elif assessment_type == "analyze":
+        return base_questions + [
+            "What is the overall maturity rating?",
+            "Which dimension has the highest score?",
+            "What are the main areas for improvement?",
+            "What evidence supports the ratings?"
+        ]
+    else:
+        return base_questions
 
 def main():
     """Main function for the chat page."""
     # Initialize page
     initialize_chat_page()
     
-    # Header
-    st.markdown('<div class="main-header">Chat with Assessed Documents</div>', unsafe_allow_html=True)
-    st.markdown("Ask questions about your analyzed documents to explore their content and assessment results.")
+    # Page header
+    page_header("💬 Chat with Documents", "Ask questions about your analyzed documents to explore insights and findings")
+    
+    # Check for API key
+    if "llm" not in st.session_state or not st.session_state.llm:
+        st.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable to use the chat feature.")
+        return
     
     # Sidebar - Document Selection
     with st.sidebar:
-        st.markdown("### Select Assessment")
+        section_header("Select Document")
         
         # Load recent assessments
         recent_assessments = load_recent_assessments()
         
         if not recent_assessments:
-            st.warning("No assessed documents found. Process a document in the Assess tab first.")
+            st.warning("No assessed documents found. Process a document in one of the assessment tabs first.")
         else:
             # Group by document name
             documents = {}
@@ -372,8 +667,11 @@ def main():
                     # Load assessment data if not already loaded
                     if (not st.session_state.current_assessment or 
                         st.session_state.current_assessment.get("id") != selected_assessment.get("id")):
-                        # Load full assessment data
-                        assessment_data = load_assessment(selected_assessment.get("path"))
+                        
+                        st.info("Loading assessment data...")
+                        
+                        # Load full assessment data with context
+                        assessment_data = load_assessment_data(selected_assessment)
                         
                         if assessment_data:
                             # Extract document content
@@ -394,33 +692,89 @@ def main():
                             
                             # Show success message
                             st.success(f"Loaded assessment: {selected_assessment.get('display_name')}")
+                            st.rerun()  # Refresh to update UI
                         else:
                             st.error("Failed to load assessment data.")
         
-        # Display assessment summary
+        # Display data sources
         if st.session_state.current_assessment:
-            with st.expander("Assessment Summary", expanded=True):
-                assessment_summary = get_assessment_summary(
-                    st.session_state.current_assessment.get("data", {})
-                )
-                st.markdown(assessment_summary)
+            assessment_data = st.session_state.current_assessment.get("data", {})
+            
+            with st.expander("Data Sources", expanded=False):
+                st.markdown("### Available Information")
+                
+                # Check for result data
+                if assessment_data.get("result"):
+                    st.markdown("✅ **Assessment Results**")
+                else:
+                    st.markdown("❌ Assessment Results")
+                
+                # Check for context data
+                if assessment_data.get("context"):
+                    st.markdown("✅ **Processing Context**")
+                    
+                    # Show context details
+                    if hasattr(assessment_data["context"], "chunks"):
+                        st.markdown(f"- Chunks: {len(assessment_data['context'].chunks)}")
+                    
+                    if hasattr(assessment_data["context"], "token_usage"):
+                        st.markdown(f"- Tokens: {assessment_data['context'].token_usage:,}")
+                else:
+                    st.markdown("❌ Processing Context")
+                
+                # Check for document content
+                if st.session_state.current_document and len(st.session_state.current_document) > 100:
+                    st.markdown("✅ **Document Content**")
+                    st.markdown(f"- Length: {len(st.session_state.current_document):,} characters")
+                else:
+                    st.markdown("❌ Document Content")
+                    
+                # Check for report
+                if assessment_data.get("markdown"):
+                    st.markdown("✅ **Markdown Report**")
+                    report_length = len(assessment_data["markdown"])
+                    st.markdown(f"- Length: {report_length:,} characters")
+                else:
+                    st.markdown("❌ Markdown Report")
     
     # Main content - Chat interface
     if not st.session_state.current_assessment:
         st.info("Select an assessment from the sidebar to start chatting.")
     else:
         # Display current document info
-        st.markdown(f"### Chatting with: {st.session_state.current_assessment.get('document_name')}")
-        st.caption(f"Assessment: {st.session_state.current_assessment.get('display_name')}")
+        current_assessment = st.session_state.current_assessment
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            st.markdown(f"### Chatting with: {current_assessment.get('document_name')}")
+            st.caption(f"Assessment Type: {current_assessment.get('type').title()} | ID: {current_assessment.get('id')}")
+        
+        with col2:
+            if st.button("Clear Chat History", use_container_width=True):
+                st.session_state.chat_history = []
+                st.rerun()
         
         # Display chat history
+        st.markdown("---")
         for message in st.session_state.chat_history:
-            display_chat_message(message["content"], message["is_user"])
+            display_chat_message(message, message["is_user"])
         
         # Chat input
         with st.form(key="chat_form", clear_on_submit=True):
-            user_input = st.text_area("Your message:", key="chat_input", height=100)
-            submit_button = st.form_submit_button("Send", use_container_width=True)
+            user_input = st.text_area("Your message:", key="chat_input", height=100, placeholder="Ask me anything about this document...")
+            col1, col2 = st.columns([5, 1])
+            
+            with col1:
+                submit_button = st.form_submit_button("Send Message", use_container_width=True, type="primary")
+            
+            with col2:
+                # Add a setting for response length
+                response_detail = st.selectbox(
+                    "Detail",
+                    options=["Concise", "Detailed"],
+                    index=0,
+                    key="response_detail"
+                )
             
             if submit_button and user_input:
                 # Add user message to chat history
@@ -436,9 +790,15 @@ def main():
                     assessment_data = st.session_state.current_assessment.get("data", {})
                     document_content = st.session_state.current_document
                     
+                    # Pass response detail preference
+                    is_detailed = response_detail == "Detailed"
+                    
                     # Generate response
-                    response = asyncio.run(generate_response(
-                        user_input, assessment_data, document_content
+                    response = asyncio.run(generate_chat_response(
+                        user_input, 
+                        assessment_data, 
+                        document_content,
+                        st.session_state.chat_history
                     ))
                     
                     # Add response to chat history
@@ -451,52 +811,26 @@ def main():
                 # Rerun to update UI with new messages
                 st.rerun()
         
-        # Show helpful suggestions
+        # Show helpful suggestions if no chat history
         if not st.session_state.chat_history:
             st.markdown("### Suggested Questions")
+            st.caption("Click on any question to start the conversation")
+            
+            # Get suggested questions based on assessment type
             assessment_type = st.session_state.current_assessment.get("type")
+            suggestions = get_suggested_questions(assessment_type)
             
-            # Type-specific suggestions
-            if assessment_type == "distill":
-                suggestions = [
-                    "What are the main key points of the document?",
-                    "What's the most important information in this document?",
-                    "Can you summarize the document in one paragraph?",
-                    "What topics does this document cover?"
-                ]
-            elif assessment_type == "extract":
-                suggestions = [
-                    "What are the action items from this document?",
-                    "Who is responsible for the most action items?",
-                    "What are the high priority action items?",
-                    "When are the action items due?"
-                ]
-            elif assessment_type == "assess":
-                suggestions = [
-                    "What are the critical issues identified in this document?",
-                    "What are the main risks mentioned?",
-                    "Which issues have the highest severity?",
-                    "What are the recommended solutions for the issues?"
-                ]
-            elif assessment_type == "analyze":
-                suggestions = [
-                    "What is the overall maturity rating?",
-                    "Which dimension has the highest score?",
-                    "What are the main areas for improvement?",
-                    "What evidence supports the ratings?"
-                ]
-            else:
-                suggestions = [
-                    "What is this document about?",
-                    "What are the main findings?",
-                    "Can you summarize the key information?"
-                ]
-            
-            # Display suggestions as clickable buttons
+            # Display suggestions in a grid
             cols = st.columns(2)
             for i, suggestion in enumerate(suggestions):
                 with cols[i % 2]:
-                    if st.button(suggestion, key=f"suggestion_{i}"):
+                    if st.button(
+                        suggestion, 
+                        key=f"suggestion_{i}",
+                        use_container_width=True,
+                        type="secondary",
+                        help="Click to ask this question"
+                    ):
                         # Add suggestion to chat history
                         st.session_state.chat_history.append({
                             "content": suggestion,
@@ -504,13 +838,15 @@ def main():
                             "timestamp": time.time()
                         })
                         
-                        # Generate response (same code as above)
+                        # Generate response
                         with st.spinner("Generating response..."):
                             assessment_data = st.session_state.current_assessment.get("data", {})
                             document_content = st.session_state.current_document
                             
-                            response = asyncio.run(generate_response(
-                                suggestion, assessment_data, document_content
+                            response = asyncio.run(generate_chat_response(
+                                suggestion, 
+                                assessment_data, 
+                                document_content
                             ))
                             
                             st.session_state.chat_history.append({
@@ -520,9 +856,6 @@ def main():
                             })
                         
                         st.rerun()
-
-# Import asyncio for async/await support
-import asyncio
 
 if __name__ == "__main__":
     main()

@@ -33,7 +33,7 @@ try:
     
     # Try to import the new summary renderer
     try:
-        from core.models.summary_renderer import render_summary
+        from utils.accessor import DataAccessor
         logger.info("Successfully imported summary renderer module")
     except ImportError as e:
         logger.warning(f"Could not import summary renderer: {e}. Enhanced summary visualization may not be available.")
