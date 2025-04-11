@@ -3,7 +3,7 @@
 > *"Built by humans. Reviewed by AI. Then corrected by more AI. It's collaborative chaos - that works."*
 
 <p align="center">
-  <img src="docs/images/bnScreen2.png" alt="Beyond Notes Banner" width="90%"/>
+  <img src="docs/images/bnScreen2.png" alt="Beyond Notes Banner" width="70%"/>
 </p>
 
 Beyond Notes transforms documents into structured insights using a multi-agent AI system. It's an educational journey into how specialized AI agents can collaborate to extract deeper meaning than any single model could achieve on its own.
