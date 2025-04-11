@@ -70,7 +70,7 @@ This provides:
 - Document chunking and metadata management
 
 <p align="center">
-  <img src="docs/images/beyondLogic.png" alt="Beyond Notes Architecture" width="80%"/>
+  <img src="docs/images/beyondLogic.png" alt="Beyond Notes Architecture" width="60%"/>
 </p>
 
 ### Configuration-Driven Design
